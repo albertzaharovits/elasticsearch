@@ -26,6 +26,7 @@ import org.elasticsearch.common.collect.MapBuilder;
 import org.elasticsearch.common.component.AbstractComponent;
 import org.elasticsearch.common.settings.Settings;
 
+import java.io.IOException;
 import java.util.Map;
 
 import static java.util.Collections.emptyMap;
@@ -49,7 +50,7 @@ public class GoogleCloudStorageService extends AbstractComponent {
      *            name of client settings to use from secure settings
      * @return a Client instance that can be used to manage Storage objects
      */
-    public Storage client(String clientName) {
+    public Storage client(String clientName) throws IOException {
         final GoogleCloudStorageClientSettings clientSettings = this.storageSettings.get(clientName);
         if (clientSettings == null) {
             throw new IllegalArgumentException("Unknown client name [" + clientName + "]. Existing client configs: "

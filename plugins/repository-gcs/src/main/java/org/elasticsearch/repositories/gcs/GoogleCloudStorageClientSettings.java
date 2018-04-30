@@ -146,18 +146,17 @@ public class GoogleCloudStorageClientSettings {
     /** The Storage client application name **/
     private final String applicationName;
 
-    private final StorageOptions storageOptions;
+    private transient StorageOptions storageOptions;
 
     GoogleCloudStorageClientSettings(final ServiceAccountCredentials credential, final String host, final String projectId,
-            final TimeValue connectTimeout, final TimeValue readTimeout, final String applicationName) throws IOException {
+            final TimeValue connectTimeout, final TimeValue readTimeout, final String applicationName) {
         this.credential = credential;
         this.host = host;
         this.projectId = projectId;
         this.connectTimeout = connectTimeout;
         this.readTimeout = readTimeout;
         this.applicationName = applicationName;
-        // storageOptions can be safely precomputed and cached
-        this.storageOptions = buildStorageOptions();
+        this.storageOptions = null;
     }
 
     private StorageOptions buildStorageOptions() throws IOException {
@@ -188,8 +187,11 @@ public class GoogleCloudStorageClientSettings {
         return SocketAccess.doPrivilegedIOException(() -> storageOptionsBuilder.build());
     }
 
-    public StorageOptions getStorageOptions() {
-        return storageOptions;
+    public StorageOptions getStorageOptions() throws IOException {
+        if (this.storageOptions == null) {
+            this.storageOptions = buildStorageOptions();
+        }
+        return this.storageOptions;
     }
 
     ServiceAccountCredentials getCredential() {
@@ -230,16 +232,12 @@ public class GoogleCloudStorageClientSettings {
     }
 
     static GoogleCloudStorageClientSettings getClientSettings(final Settings settings, final String clientName) {
-        try {
             return new GoogleCloudStorageClientSettings(loadCredential(settings, clientName),
                     getConfigValue(settings, clientName, HOST_SETTING),
                     getConfigValue(settings, clientName, PROJECT_ID_SETTING),
                     getConfigValue(settings, clientName, CONNECT_TIMEOUT_SETTING),
                     getConfigValue(settings, clientName, READ_TIMEOUT_SETTING),
                     getConfigValue(settings, clientName, APPLICATION_NAME_SETTING));
-        } catch (final IOException e) {
-            throw new UncheckedIOException(e);
-        }
     }
 
     /**
@@ -255,21 +253,25 @@ public class GoogleCloudStorageClientSettings {
      *         {@code null} if no service account is defined.
      * @throws IOException
      */
-    static ServiceAccountCredentials loadCredential(final Settings settings, final String clientName) throws IOException {
-        if (CREDENTIALS_FILE_SETTING.getConcreteSettingForNamespace(clientName).exists(settings) == false) {
-            // explicitly returning null here so that the default credential
-            // can be loaded later when creating the Storage client
-            return null;
-        }
-        try (InputStream credStream = CREDENTIALS_FILE_SETTING.getConcreteSettingForNamespace(clientName).get(settings)) {
-            final Collection<String> scopes = Collections.singleton(StorageScopes.DEVSTORAGE_FULL_CONTROL);
-            return SocketAccess.doPrivilegedIOException(() -> {
-                final ServiceAccountCredentials credentials = ServiceAccountCredentials.fromStream(credStream);
-                if (credentials.createScopedRequired()) {
-                    return (ServiceAccountCredentials) credentials.createScoped(scopes);
-                }
-                return credentials;
-            });
+    static ServiceAccountCredentials loadCredential(final Settings settings, final String clientName) {
+        try {
+            if (CREDENTIALS_FILE_SETTING.getConcreteSettingForNamespace(clientName).exists(settings) == false) {
+                // explicitly returning null here so that the default credential
+                // can be loaded later when creating the Storage client
+                return null;
+            }
+            try (InputStream credStream = CREDENTIALS_FILE_SETTING.getConcreteSettingForNamespace(clientName).get(settings)) {
+                final Collection<String> scopes = Collections.singleton(StorageScopes.DEVSTORAGE_FULL_CONTROL);
+                return SocketAccess.doPrivilegedIOException(() -> {
+                    final ServiceAccountCredentials credentials = ServiceAccountCredentials.fromStream(credStream);
+                    if (credentials.createScopedRequired()) {
+                        return (ServiceAccountCredentials) credentials.createScoped(scopes);
+                    }
+                    return credentials;
+                });
+            }
+        } catch (final IOException e) {
+            throw new UncheckedIOException(e);
         }
     }
 

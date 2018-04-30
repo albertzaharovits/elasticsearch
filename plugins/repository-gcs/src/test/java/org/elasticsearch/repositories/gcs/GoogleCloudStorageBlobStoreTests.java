@@ -26,6 +26,7 @@ import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.repositories.ESBlobStoreTestCase;
 import org.mockito.Matchers;
 
+import java.io.IOException;
 import java.util.Locale;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -35,7 +36,7 @@ import static org.mockito.Mockito.when;
 public class GoogleCloudStorageBlobStoreTests extends ESBlobStoreTestCase {
 
     @Override
-    protected BlobStore newBlobStore() {
+    protected BlobStore newBlobStore() throws IOException {
         final String bucket = randomAlphaOfLength(randomIntBetween(1, 10)).toLowerCase(Locale.ROOT);
         final String clientName = randomAlphaOfLength(randomIntBetween(1, 10)).toLowerCase(Locale.ROOT);
         final Storage storage = new MockStorage(bucket, new ConcurrentHashMap<>());
