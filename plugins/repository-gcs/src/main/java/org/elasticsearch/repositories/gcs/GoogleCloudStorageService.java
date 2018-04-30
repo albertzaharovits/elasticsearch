@@ -19,40 +19,27 @@
 
 package org.elasticsearch.repositories.gcs;
 
-import com.google.api.client.googleapis.javanet.GoogleNetHttpTransport;
-import com.google.api.client.http.javanet.NetHttpTransport;
-import com.google.api.gax.retrying.RetrySettings;
-import com.google.cloud.http.HttpTransportOptions;
 import com.google.cloud.storage.Storage;
-import com.google.cloud.storage.StorageOptions;
 
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.collect.MapBuilder;
 import org.elasticsearch.common.component.AbstractComponent;
-import org.elasticsearch.common.unit.TimeValue;
-import org.elasticsearch.env.Environment;
-import org.threeten.bp.Duration;
+import org.elasticsearch.common.settings.Settings;
 
-import java.io.IOException;
-import java.security.GeneralSecurityException;
 import java.util.Map;
+
+import static java.util.Collections.emptyMap;
 
 public class GoogleCloudStorageService extends AbstractComponent {
 
     /** Clients settings identified by client name. */
-    private final Map<String, GoogleCloudStorageClientSettings> clientsSettings;
-    private final RetrySettings retrySettings;
+    volatile Map<String, GoogleCloudStorageClientSettings> storageSettings = emptyMap();
 
-    public GoogleCloudStorageService(Environment environment, Map<String, GoogleCloudStorageClientSettings> clientsSettings) {
-        super(environment.settings());
-        this.clientsSettings = clientsSettings;
-        this.retrySettings = RetrySettings.newBuilder()
-                .setInitialRetryDelay(Duration.ofMillis(100))
-                .setMaxRetryDelay(Duration.ofMillis(6000))
-                .setTotalTimeout(Duration.ofMillis(900000))
-                .setRetryDelayMultiplier(1.5d)
-                .setJittered(true)
-                .build();
+    public GoogleCloudStorageService(Settings settings) {
+        super(settings);
+        // eagerly load client settings so that secure settings are read
+        final Map<String, GoogleCloudStorageClientSettings> clientSettings = GoogleCloudStorageClientSettings.load(settings);
+        updateClientsSettings(clientSettings);
     }
 
     /**
@@ -62,56 +49,28 @@ public class GoogleCloudStorageService extends AbstractComponent {
      *            name of client settings to use from secure settings
      * @return a Client instance that can be used to manage Storage objects
      */
-    public Storage createClient(String clientName) throws GeneralSecurityException, IOException {
-        final GoogleCloudStorageClientSettings clientSettings = clientsSettings.get(clientName);
+    public Storage client(String clientName) {
+        final GoogleCloudStorageClientSettings clientSettings = this.storageSettings.get(clientName);
         if (clientSettings == null) {
             throw new IllegalArgumentException("Unknown client name [" + clientName + "]. Existing client configs: "
-                    + Strings.collectionToDelimitedString(clientsSettings.keySet(), ","));
+                    + Strings.collectionToDelimitedString(storageSettings.keySet(), ","));
         }
-        final NetHttpTransport netHttpTransport = GoogleNetHttpTransport.newTrustedTransport();
-        final HttpTransportOptions httpTransportOptions = HttpTransportOptions.newBuilder()
-                .setConnectTimeout(toTimeout(clientSettings.getConnectTimeout()))
-                .setReadTimeout(toTimeout(clientSettings.getReadTimeout()))
-                .setHttpTransportFactory(() -> netHttpTransport)
-                .build();
-        final StorageOptions.Builder storageOptionsBuilder = StorageOptions.newBuilder()
-                .setRetrySettings(retrySettings)
-                .setTransportOptions(httpTransportOptions)
-                .setHeaderProvider(() -> {
-                    final MapBuilder<String, String> mapBuilder = MapBuilder.newMapBuilder();
-                    if (Strings.hasLength(clientSettings.getApplicationName())) {
-                        mapBuilder.put("user-agent", clientSettings.getApplicationName());
-                    }
-                    return mapBuilder.immutableMap();
-                });
-        if (Strings.hasLength(clientSettings.getHost())) {
-            storageOptionsBuilder.setHost(clientSettings.getHost());
-        }
-        if (clientSettings.getCredential() != null) {
-            storageOptionsBuilder.setCredentials(clientSettings.getCredential());
-        }
-        if (Strings.hasLength(clientSettings.getProjectId())) {
-            storageOptionsBuilder.setProjectId(clientSettings.getProjectId());
-        }
-        return storageOptionsBuilder.build().getService();
+        // builds and caches client
+        return clientSettings.getStorageOptions().getService();
     }
 
     /**
-     * Converts timeout values from the settings to a timeout value for the Google
-     * Cloud SDK
-     **/
-    static Integer toTimeout(TimeValue timeout) {
-        // Null or zero in settings means the default timeout
-        if ((timeout == null) || TimeValue.ZERO.equals(timeout)) {
-            // negative value means using the default value
-            return -1;
-        }
-        // -1 means infinite timeout
-        if (TimeValue.MINUS_ONE.equals(timeout)) {
-            // 0 is the infinite timeout expected by Google Cloud SDK
-            return 0;
-        }
-        return Math.toIntExact(timeout.getMillis());
+     * Updates settings for building clients. Future client requests will use the
+     * new settings.
+     *
+     * @param clientsSettings
+     *            the new settings
+     * @return the old settings
+     */
+    Map<String, GoogleCloudStorageClientSettings> updateClientsSettings(Map<String, GoogleCloudStorageClientSettings> clientsSettings) {
+        final Map<String, GoogleCloudStorageClientSettings> prevSettings = this.storageSettings;
+        this.storageSettings = MapBuilder.newMapBuilder(clientsSettings).immutableMap();
+        return prevSettings;
     }
 
 }

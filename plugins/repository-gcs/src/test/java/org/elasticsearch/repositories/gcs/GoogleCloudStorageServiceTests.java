@@ -26,22 +26,16 @@ import com.google.cloud.storage.Storage;
 import org.elasticsearch.common.settings.Setting;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
-import org.elasticsearch.env.Environment;
 import org.elasticsearch.test.ESTestCase;
 import org.hamcrest.Matchers;
 import java.io.IOException;
 import java.security.GeneralSecurityException;
-import java.util.Collections;
 import java.util.Locale;
-
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 public class GoogleCloudStorageServiceTests extends ESTestCase {
 
     public void testClientInitializer() throws GeneralSecurityException, IOException {
         final String clientName = randomAlphaOfLength(4).toLowerCase(Locale.ROOT);
-        final Environment environment = mock(Environment.class);
         final TimeValue connectTimeValue = TimeValue.timeValueNanos(randomIntBetween(0, 2000000));
         final TimeValue readTimeValue = TimeValue.timeValueNanos(randomIntBetween(0, 2000000));
         final String applicationName = randomAlphaOfLength(4);
@@ -54,15 +48,12 @@ public class GoogleCloudStorageServiceTests extends ESTestCase {
                 .put(GoogleCloudStorageClientSettings.HOST_SETTING.getConcreteSettingForNamespace(clientName).getKey(), hostName)
                 .put(GoogleCloudStorageClientSettings.PROJECT_ID_SETTING.getConcreteSettingForNamespace(clientName).getKey(), projectIdName)
                 .build();
-        when(environment.settings()).thenReturn(settings);
-        final GoogleCloudStorageClientSettings clientSettings = GoogleCloudStorageClientSettings.getClientSettings(settings, clientName);
-        final GoogleCloudStorageService service = new GoogleCloudStorageService(environment,
-                Collections.singletonMap(clientName, clientSettings));
-        final IllegalArgumentException e = expectThrows(IllegalArgumentException.class, () -> service.createClient("another_client"));
+        final GoogleCloudStorageService service = new GoogleCloudStorageService(settings);
+        final IllegalArgumentException e = expectThrows(IllegalArgumentException.class, () -> service.client("another_client"));
         assertThat(e.getMessage(), Matchers.startsWith("Unknown client name"));
         assertSettingDeprecationsAndWarnings(
                 new Setting<?>[] { GoogleCloudStorageClientSettings.APPLICATION_NAME_SETTING.getConcreteSettingForNamespace(clientName) });
-        final Storage storage = service.createClient(clientName);
+        final Storage storage = service.client(clientName);
         assertThat(storage.getOptions().getApplicationName(), Matchers.containsString(applicationName));
         assertThat(storage.getOptions().getHost(), Matchers.is(hostName));
         assertThat(storage.getOptions().getProjectId(), Matchers.is(projectIdName));
@@ -74,9 +65,4 @@ public class GoogleCloudStorageServiceTests extends ESTestCase {
         assertThat(storage.getOptions().getCredentials(), Matchers.nullValue(Credentials.class));
     }
 
-    public void testToTimeout() {
-        assertEquals(-1, GoogleCloudStorageService.toTimeout(null).intValue());
-        assertEquals(-1, GoogleCloudStorageService.toTimeout(TimeValue.ZERO).intValue());
-        assertEquals(0, GoogleCloudStorageService.toTimeout(TimeValue.MINUS_ONE).intValue());
-    }
 }

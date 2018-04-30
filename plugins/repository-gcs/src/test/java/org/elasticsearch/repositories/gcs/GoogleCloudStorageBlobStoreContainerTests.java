@@ -19,18 +19,29 @@
 
 package org.elasticsearch.repositories.gcs;
 
+import com.google.cloud.storage.Storage;
+
 import org.elasticsearch.common.blobstore.BlobStore;
+
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.repositories.ESBlobStoreContainerTestCase;
+import org.mockito.Matchers;
 
 import java.util.Locale;
 import java.util.concurrent.ConcurrentHashMap;
+
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 public class GoogleCloudStorageBlobStoreContainerTests extends ESBlobStoreContainerTestCase {
 
     @Override
     protected BlobStore newBlobStore() {
-        String bucket = randomAlphaOfLength(randomIntBetween(1, 10)).toLowerCase(Locale.ROOT);
-        return new GoogleCloudStorageBlobStore(Settings.EMPTY, bucket, new MockStorage(bucket, new ConcurrentHashMap<>()));
+        final String bucket = randomAlphaOfLength(randomIntBetween(1, 10)).toLowerCase(Locale.ROOT);
+        final String clientName = randomAlphaOfLength(randomIntBetween(1, 10)).toLowerCase(Locale.ROOT);
+        final Storage storage = new MockStorage(bucket, new ConcurrentHashMap<>());
+        final GoogleCloudStorageService storageService = mock(GoogleCloudStorageService.class);
+        when(storageService.client(Matchers.anyString())).thenReturn(storage);
+        return new GoogleCloudStorageBlobStore(Settings.EMPTY, bucket, clientName, storageService);
     }
 }

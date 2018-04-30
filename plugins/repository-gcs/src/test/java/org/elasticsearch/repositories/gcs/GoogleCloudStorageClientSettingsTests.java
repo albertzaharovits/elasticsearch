@@ -93,6 +93,12 @@ public class GoogleCloudStorageClientSettingsTests extends ESTestCase {
         assertGoogleCredential(expectedClientSettings.getCredential(), loadCredential(randomClient.v2(), clientName));
     }
 
+    public void testToTimeout() {
+        assertEquals(-1, GoogleCloudStorageClientSettings.toTimeout(null).intValue());
+        assertEquals(-1, GoogleCloudStorageClientSettings.toTimeout(TimeValue.ZERO).intValue());
+        assertEquals(0, GoogleCloudStorageClientSettings.toTimeout(TimeValue.MINUS_ONE).intValue());
+    }
+
     /** Generates a given number of GoogleCloudStorageClientSettings along with the Settings to build them from **/
     private Tuple<Map<String, GoogleCloudStorageClientSettings>, Settings> randomClients(final int nbClients,
                                                                                          final List<Setting<?>> deprecationWarnings)

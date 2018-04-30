@@ -18,18 +18,27 @@
  */
 package org.elasticsearch.repositories.gcs;
 
+import com.google.api.client.googleapis.GoogleUtils;
+import com.google.api.client.http.javanet.DefaultConnectionFactory;
+import com.google.api.client.http.javanet.NetHttpTransport;
+import com.google.api.gax.retrying.RetrySettings;
 import com.google.api.services.storage.StorageScopes;
 import com.google.auth.oauth2.ServiceAccountCredentials;
+import com.google.cloud.http.HttpTransportOptions;
+import com.google.cloud.storage.StorageOptions;
 
 import org.elasticsearch.common.Strings;
+import org.elasticsearch.common.collect.MapBuilder;
 import org.elasticsearch.common.settings.SecureSetting;
 import org.elasticsearch.common.settings.Setting;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
+import org.threeten.bp.Duration;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
+import java.security.GeneralSecurityException;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -92,6 +101,27 @@ public class GoogleCloudStorageClientSettings {
             key -> new Setting<>(key, "elasticsearch-repository-gcs", Function.identity(), Setting.Property.NodeScope,
                     Setting.Property.Deprecated));
 
+    private static final RetrySettings retrySettings;
+    private static final NetHttpTransport netHttpTransport;
+
+    static {
+        retrySettings = RetrySettings.newBuilder()
+                .setInitialRetryDelay(Duration.ofMillis(100))
+                .setMaxRetryDelay(Duration.ofMillis(6000))
+                .setTotalTimeout(Duration.ofMillis(900000))
+                .setRetryDelayMultiplier(1.5d)
+                .setJittered(true)
+                .build();
+        try {
+            netHttpTransport = new NetHttpTransport.Builder().trustCertificates(GoogleUtils.getCertificateTrustStore())
+                    .setConnectionFactory(new DefaultConnectionFactory()) // be explicit about connection factory to assure
+                                                                          // thread-safetiness
+                    .build();
+        } catch (GeneralSecurityException | IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
     /** The credentials used by the client to connect to the Storage endpoint **/
     private final ServiceAccountCredentials credential;
 
@@ -116,41 +146,73 @@ public class GoogleCloudStorageClientSettings {
     /** The Storage client application name **/
     private final String applicationName;
 
-    GoogleCloudStorageClientSettings(final ServiceAccountCredentials credential,
-                                     final String host,
-                                     final String projectId,
-                                     final TimeValue connectTimeout,
-                                     final TimeValue readTimeout,
-                                     final String applicationName) {
+    private final StorageOptions storageOptions;
+
+    GoogleCloudStorageClientSettings(final ServiceAccountCredentials credential, final String host, final String projectId,
+            final TimeValue connectTimeout, final TimeValue readTimeout, final String applicationName) throws IOException {
         this.credential = credential;
         this.host = host;
         this.projectId = projectId;
         this.connectTimeout = connectTimeout;
         this.readTimeout = readTimeout;
         this.applicationName = applicationName;
+        // storageOptions can be safely precomputed and cached
+        this.storageOptions = buildStorageOptions();
     }
 
-    public ServiceAccountCredentials getCredential() {
+    private StorageOptions buildStorageOptions() throws IOException {
+        final HttpTransportOptions httpTransportOptions = HttpTransportOptions.newBuilder()
+                .setConnectTimeout(toTimeout(getConnectTimeout()))
+                .setReadTimeout(toTimeout(getReadTimeout()))
+                .setHttpTransportFactory(() -> netHttpTransport)
+                .build();
+        final StorageOptions.Builder storageOptionsBuilder = StorageOptions.newBuilder()
+                .setRetrySettings(retrySettings)
+                .setTransportOptions(httpTransportOptions)
+                .setHeaderProvider(() -> {
+                    final MapBuilder<String, String> mapBuilder = MapBuilder.newMapBuilder();
+                    if (Strings.hasLength(getApplicationName())) {
+                        mapBuilder.put("user-agent", getApplicationName());
+                    }
+                    return mapBuilder.immutableMap();
+                });
+        if (Strings.hasLength(getHost())) {
+            storageOptionsBuilder.setHost(getHost());
+        }
+        if (getCredential() != null) {
+            storageOptionsBuilder.setCredentials(getCredential());
+        }
+        if (Strings.hasLength(getProjectId())) {
+            storageOptionsBuilder.setProjectId(getProjectId());
+        }
+        return SocketAccess.doPrivilegedIOException(() -> storageOptionsBuilder.build());
+    }
+
+    public StorageOptions getStorageOptions() {
+        return storageOptions;
+    }
+
+    ServiceAccountCredentials getCredential() {
         return credential;
     }
 
-    public String getHost() {
+    String getHost() {
         return host;
     }
 
-    public String getProjectId() {
+    String getProjectId() {
         return Strings.hasLength(projectId) ? projectId : (credential != null ? credential.getProjectId() : null);
     }
 
-    public TimeValue getConnectTimeout() {
+    TimeValue getConnectTimeout() {
         return connectTimeout;
     }
 
-    public TimeValue getReadTimeout() {
+    TimeValue getReadTimeout() {
         return readTimeout;
     }
 
-    public String getApplicationName() {
+    String getApplicationName() {
         return applicationName;
     }
 
@@ -168,14 +230,16 @@ public class GoogleCloudStorageClientSettings {
     }
 
     static GoogleCloudStorageClientSettings getClientSettings(final Settings settings, final String clientName) {
-        return new GoogleCloudStorageClientSettings(
-            loadCredential(settings, clientName),
-            getConfigValue(settings, clientName, HOST_SETTING),
-            getConfigValue(settings, clientName, PROJECT_ID_SETTING),
-            getConfigValue(settings, clientName, CONNECT_TIMEOUT_SETTING),
-            getConfigValue(settings, clientName, READ_TIMEOUT_SETTING),
-            getConfigValue(settings, clientName, APPLICATION_NAME_SETTING)
-        );
+        try {
+            return new GoogleCloudStorageClientSettings(loadCredential(settings, clientName),
+                    getConfigValue(settings, clientName, HOST_SETTING),
+                    getConfigValue(settings, clientName, PROJECT_ID_SETTING),
+                    getConfigValue(settings, clientName, CONNECT_TIMEOUT_SETTING),
+                    getConfigValue(settings, clientName, READ_TIMEOUT_SETTING),
+                    getConfigValue(settings, clientName, APPLICATION_NAME_SETTING));
+        } catch (final IOException e) {
+            throw new UncheckedIOException(e);
+        }
     }
 
     /**
@@ -189,31 +253,46 @@ public class GoogleCloudStorageClientSettings {
      *
      * @return the {@link ServiceAccountCredentials} to use for the given client,
      *         {@code null} if no service account is defined.
+     * @throws IOException
      */
-    static ServiceAccountCredentials loadCredential(final Settings settings, final String clientName) {
-        try {
-            if (CREDENTIALS_FILE_SETTING.getConcreteSettingForNamespace(clientName).exists(settings) == false) {
-                // explicitly returning null here so that the default credential
-                // can be loaded later when creating the Storage client
-                return null;
-            }
-            try (InputStream credStream = CREDENTIALS_FILE_SETTING.getConcreteSettingForNamespace(clientName).get(settings)) {
-                final Collection<String> scopes = Collections.singleton(StorageScopes.DEVSTORAGE_FULL_CONTROL);
-                return SocketAccess.doPrivilegedIOException(() -> {
-                    final ServiceAccountCredentials credentials = ServiceAccountCredentials.fromStream(credStream);
-                    if (credentials.createScopedRequired()) {
-                        return (ServiceAccountCredentials) credentials.createScoped(scopes);
-                    }
-                    return credentials;
-                });
-            }
-        } catch (final IOException e) {
-            throw new UncheckedIOException(e);
+    static ServiceAccountCredentials loadCredential(final Settings settings, final String clientName) throws IOException {
+        if (CREDENTIALS_FILE_SETTING.getConcreteSettingForNamespace(clientName).exists(settings) == false) {
+            // explicitly returning null here so that the default credential
+            // can be loaded later when creating the Storage client
+            return null;
+        }
+        try (InputStream credStream = CREDENTIALS_FILE_SETTING.getConcreteSettingForNamespace(clientName).get(settings)) {
+            final Collection<String> scopes = Collections.singleton(StorageScopes.DEVSTORAGE_FULL_CONTROL);
+            return SocketAccess.doPrivilegedIOException(() -> {
+                final ServiceAccountCredentials credentials = ServiceAccountCredentials.fromStream(credStream);
+                if (credentials.createScopedRequired()) {
+                    return (ServiceAccountCredentials) credentials.createScoped(scopes);
+                }
+                return credentials;
+            });
         }
     }
 
     private static <T> T getConfigValue(final Settings settings, final String clientName, final Setting.AffixSetting<T> clientSetting) {
         final Setting<T> concreteSetting = clientSetting.getConcreteSettingForNamespace(clientName);
         return concreteSetting.get(settings);
+    }
+
+    /**
+     * Converts timeout values from the settings to a timeout value for the Google
+     * Cloud SDK
+     **/
+    static Integer toTimeout(TimeValue timeout) {
+        // Null or zero in settings means the default timeout
+        if ((timeout == null) || TimeValue.ZERO.equals(timeout)) {
+            // negative value means using the default value
+            return -1;
+        }
+        // -1 means infinite timeout
+        if (TimeValue.MINUS_ONE.equals(timeout)) {
+            // 0 is the infinite timeout expected by Google Cloud SDK
+            return 0;
+        }
+        return Math.toIntExact(timeout.getMillis());
     }
 }

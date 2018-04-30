@@ -19,7 +19,8 @@
 
 package org.elasticsearch.repositories.gcs;
 
-import com.google.cloud.storage.Storage;
+import org.apache.logging.log4j.message.ParameterizedMessage;
+import org.apache.logging.log4j.util.Supplier;
 import org.elasticsearch.cluster.metadata.RepositoryMetaData;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.blobstore.BlobPath;
@@ -66,9 +67,10 @@ class GoogleCloudStorageRepository extends BlobStoreRepository {
                                         NamedXContentRegistry namedXContentRegistry,
                                         GoogleCloudStorageService storageService) throws Exception {
         super(metadata, environment.settings(), namedXContentRegistry);
-
+        this.chunkSize = getSetting(CHUNK_SIZE, metadata);
+        this.compress = getSetting(COMPRESS, metadata);
         final String bucket = getSetting(BUCKET, metadata);
-        final String clientName = CLIENT_NAME.get(metadata.settings());
+        final String clientName = getSetting(CLIENT_NAME, metadata);
         final String basePath = BASE_PATH.get(metadata.settings());
         if (Strings.hasLength(basePath)) {
             BlobPath path = new BlobPath();
@@ -79,16 +81,10 @@ class GoogleCloudStorageRepository extends BlobStoreRepository {
         } else {
             this.basePath = BlobPath.cleanPath();
         }
-
-        this.compress = getSetting(COMPRESS, metadata);
-        this.chunkSize = getSetting(CHUNK_SIZE, metadata);
-
-        logger.debug("using bucket [{}], base_path [{}], chunk_size [{}], compress [{}]", bucket, basePath, chunkSize, compress);
-
-        final Storage client = SocketAccess.doPrivilegedIOException(() -> storageService.createClient(clientName));
-        this.blobStore = new GoogleCloudStorageBlobStore(settings, bucket, client);
+        logger.debug((Supplier<?>) () -> new ParameterizedMessage("using bucket [{}], base_path [{}], chunk_size [{}], compress [{}]",
+                bucket, basePath(), chunkSize(), isCompress()));
+        this.blobStore = new GoogleCloudStorageBlobStore(settings, bucket, clientName, storageService);
     }
-
 
     @Override
     protected BlobStore blobStore() {
