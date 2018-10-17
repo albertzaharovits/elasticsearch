@@ -5,11 +5,11 @@
 The `logfile` audit output is the default output for auditing. It writes data to
 the `<clustername>_audit.log` file in the logs directory. To maintain
 compatibility with releases prior to 6.5, another file `<clustername>_access.log`
-is also generated next to it. They differ in the output format but not in the
-contents. For systems that don't automatically ingest the audit file for search
-or analytics it is strongly recommended to only keep the newer version.
-Turning off the deprecated output format can be done my disabling the logger
-in the `log4j2.properties` file in `ES_PATH_CONF` (hint: there is a comment
+is also generated next to it. They differ in the output format but the contents
+are similar. For systems that had not automatically ingesting the audit file
+for search or analytics it is strongly recommended to only keep the newer format.
+Turning off the deprecated output format can be achieved by disabling the logger
+in the `log4j2.properties` file in `ES_PATH_CONF` (hint, there is a comment
 there about it).
 
 [float]
@@ -19,14 +19,17 @@ there about it).
 This is describing the format for log entries as they are appended to the
 new `<clustername>_audit.log` file.
 
-Each log entry is a one line JSON document and each log entry is on a separate line.
-The log entry does not contain nested JSON objects.
-Fields of a log entry are ordered. However, if a field does not have a value it
-will not be printed. The precise pattern is specified in the `log4j2.properties`
-file.
-Field names follow a dotted notation to flatten inner objects.
-Field values can be strings, numerics or arrays of strings.
-Field values will be escaped as per the JSON RFC 4627.
+- Each log entry is a one line JSON document and each one is printed on a separate line.
+- The fields of a log entry are ordered. However, if a field does not have a value it
+  will not be printed. The precise line pattern, together with the absolute field
+  order, are specified in the `log4j2.properties` config file.
+- The log entry does not contain nested inner JSON objects, i.e. the doc is flat.
+- The field names follow a dotted notation to flatten inner objects.
+- A field's value can be a string, a number or an array of strings.
+- A field's value, request's body as well, will be escaped as per the JSON RFC 4627.
+
+There is a list of <<audit-event-types, audit event types>> specifying the
+set of fields for each sog entry type.
 
 [float]
 [[deprecated-audit-log-entry-format]]
