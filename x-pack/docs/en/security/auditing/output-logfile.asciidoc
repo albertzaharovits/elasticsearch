@@ -3,13 +3,36 @@
 === Logfile audit output
 
 The `logfile` audit output is the default output for auditing. It writes data to
-the `<clustername>_access.log` file in the logs directory.
+the `<clustername>_audit.log` file in the logs directory. To maintain
+compatibility with releases prior to 6.5, another file `<clustername>_access.log`
+is also generated next to it. They differ in the output format but not in the
+contents. For systems that don't automatically ingest the audit file for search
+or analytics it is strongly recommended to only keep the newer version.
+Turning off the deprecated output format can be done my disabling the logger
+in the `log4j2.properties` file in `ES_PATH_CONF` (hint: there is a comment
+there about it).
 
 [float]
 [[audit-log-entry-format]]
 === Log entry format
 
-The format of a log entry is:
+This is describing the format for log entries as they are appended to the
+new `<clustername>_audit.log` file.
+
+Each log entry is a one line JSON document and each log entry is on a separate line.
+The log entry does not contain nested JSON objects.
+Fields of a log entry are ordered. However, if a field does not have a value it
+will not be printed. The precise pattern is specified in the `log4j2.properties`
+file.
+Field names follow a dotted notation to flatten inner objects.
+Field values can be strings, numerics or arrays of strings.
+Field values will be escaped as per the JSON RFC 4627.
+
+[float]
+[[deprecated-audit-log-entry-format]]
+=== Deprecated log entry format
+
+This is the format for a log entries as appended to `<clustername>_access.log`:
 
 [source,txt]
 ----------------------------------------------------------------------------
@@ -48,8 +71,14 @@ audited in plain text when including the request body in audit events.
 [[logging-file]]
 You can also configure how the logfile is written in the `log4j2.properties`
 file located in `ES_PATH_CONF`. By default, audit information is appended to the
-`<clustername>_access.log` file located in the standard Elasticsearch `logs` directory
+`<clustername>_audit.log` file located in the standard Elasticsearch `logs` directory
 (typically located at `$ES_HOME/logs`). The file rolls over on a daily basis.
+The deprecated logfile audit format (`<clustername>_access.log`) can be disabled
+from the same `log4j2.properties` file (hint: look for the comment
+instructing to set the log level to `off`). The deprecated format is a duplication
+of information that is in place to assure backwards compatibility. If you are
+not strict about the audit format it is strongly recommended to only use the
+`<clustername>_audit.log` log appender.
 
 [float]
 [[audit-log-ignore-policy]]
