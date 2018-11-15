@@ -5,9 +5,9 @@
  */
 package org.elasticsearch.xpack.watcher.notification;
 
-import org.elasticsearch.common.collect.Tuple;
 import org.elasticsearch.common.component.AbstractComponent;
 import org.elasticsearch.common.settings.ClusterSettings;
+import org.elasticsearch.common.settings.SecureSetting;
 import org.elasticsearch.common.settings.Setting;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.settings.SettingsException;
@@ -17,6 +17,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.BiFunction;
+import java.util.stream.Collectors;
 
 /**
  * Basic notification service
@@ -28,10 +29,13 @@ public abstract class NotificationService<Account> extends AbstractComponent {
     private Map<String, Account> accounts;
     private Account defaultAccount;
 
-    public NotificationService(String type,
-                               ClusterSettings clusterSettings, List<Setting<?>> pluginSettings) {
+    public NotificationService(String type, Settings settings, ClusterSettings clusterSettings, List<Setting<?>> pluginSettings) {
         this(type);
-        clusterSettings.addSettingsUpdateConsumer(this::reload, pluginSettings);
+        final List<Setting<?>> dynamicPluginSettings = pluginSettings.stream().filter(s -> s.isDynamic() && s.hasNodeScope())
+                .collect(Collectors.toList()); 
+        final List<Setting<?>> securePluginSettings = pluginSettings.stream().filter(s -> s instanceof SecureSetting<?>)
+                .collect(Collectors.toList());
+        clusterSettings.addSettingsUpdateConsumer(this::reload, dynamicPluginSettings);
     }
 
     // Used for testing only
@@ -40,9 +44,7 @@ public abstract class NotificationService<Account> extends AbstractComponent {
     }
 
     public synchronized void reload(Settings settings) {
-        Tuple<Map<String, Account>, Account> accounts = buildAccounts(settings, this::createAccount);
-        this.accounts = Collections.unmodifiableMap(accounts.v1());
-        this.defaultAccount = accounts.v2();
+        buildAccounts(settings, this::createAccount);
     }
 
     protected abstract Account createAccount(String name, Settings accountSettings);
@@ -67,24 +69,22 @@ public abstract class NotificationService<Account> extends AbstractComponent {
         return theAccount;
     }
 
-    private <A> Tuple<Map<String, A>, A> buildAccounts(Settings settings, BiFunction<String, Settings, A> accountFactory) {
+    private void buildAccounts(Settings settings, BiFunction<String, Settings, Account> accountFactory) {
         Settings accountsSettings = settings.getByPrefix("xpack.notification." + type + ".").getAsSettings("account");
-        Map<String, A> accounts = new HashMap<>();
+        Map<String, Account> accounts = new HashMap<>();
         for (String name : accountsSettings.names()) {
             Settings accountSettings = accountsSettings.getAsSettings(name);
-            A account = accountFactory.apply(name, accountSettings);
+            Account account = accountFactory.apply(name, accountSettings);
             accounts.put(name, account);
         }
-
         final String defaultAccountName = settings.get("xpack.notification." + type + ".default_account");
-        A defaultAccount;
+        Account defaultAccount;
         if (defaultAccountName == null) {
             if (accounts.isEmpty()) {
                 defaultAccount = null;
             } else {
-                A account = accounts.values().iterator().next();
+                Account account = accounts.values().iterator().next();
                 defaultAccount = account;
-
             }
         } else {
             defaultAccount = accounts.get(defaultAccountName);
@@ -92,6 +92,9 @@ public abstract class NotificationService<Account> extends AbstractComponent {
                 throw new SettingsException("could not find default account [" + defaultAccountName + "]");
             }
         }
-        return new Tuple<>(accounts, defaultAccount);
+        synchronized (this) {
+            this.accounts = Collections.unmodifiableMap(accounts);
+            this.defaultAccount = defaultAccount;
+        }
     }
 }

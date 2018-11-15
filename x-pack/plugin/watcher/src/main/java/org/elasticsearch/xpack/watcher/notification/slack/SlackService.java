@@ -40,13 +40,12 @@ public class SlackService extends NotificationService<SlackAccount> {
     private final HttpClient httpClient;
 
     public SlackService(Settings settings, HttpClient httpClient, ClusterSettings clusterSettings) {
-        super("slack", clusterSettings, SlackService.getSettings());
+        super("slack", settings, clusterSettings, SlackService.getSettings());
         this.httpClient = httpClient;
+        // for logging individual setting changes
         clusterSettings.addSettingsUpdateConsumer(SETTING_DEFAULT_ACCOUNT, (s) -> {});
         clusterSettings.addAffixUpdateConsumer(SETTING_URL, (s, o) -> {}, (s, o) -> {});
-        clusterSettings.addAffixUpdateConsumer(SETTING_URL_SECURE, (s, o) -> {}, (s, o) -> {});
         clusterSettings.addAffixUpdateConsumer(SETTING_DEFAULTS, (s, o) -> {}, (s, o) -> {});
-        reload(settings);
     }
 
     @Override

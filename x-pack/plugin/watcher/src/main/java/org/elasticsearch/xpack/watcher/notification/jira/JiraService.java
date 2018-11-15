@@ -62,20 +62,15 @@ public class JiraService extends NotificationService<JiraAccount> {
     private final HttpClient httpClient;
 
     public JiraService(Settings settings, HttpClient httpClient, ClusterSettings clusterSettings) {
-        super("jira", clusterSettings, JiraService.getSettings());
+        super("jira", settings, clusterSettings, JiraService.getSettings());
         this.httpClient = httpClient;
-        // ensure logging of setting changes
+        // for logging individual setting changes
         clusterSettings.addSettingsUpdateConsumer(SETTING_DEFAULT_ACCOUNT, (s) -> {});
         clusterSettings.addAffixUpdateConsumer(SETTING_ALLOW_HTTP, (s, o) -> {}, (s, o) -> {});
         clusterSettings.addAffixUpdateConsumer(SETTING_URL, (s, o) -> {}, (s, o) -> {});
         clusterSettings.addAffixUpdateConsumer(SETTING_USER, (s, o) -> {}, (s, o) -> {});
         clusterSettings.addAffixUpdateConsumer(SETTING_PASSWORD, (s, o) -> {}, (s, o) -> {});
-        clusterSettings.addAffixUpdateConsumer(SETTING_SECURE_USER, (s, o) -> {}, (s, o) -> {});
-        clusterSettings.addAffixUpdateConsumer(SETTING_SECURE_URL, (s, o) -> {}, (s, o) -> {});
-        clusterSettings.addAffixUpdateConsumer(SETTING_SECURE_PASSWORD, (s, o) -> {}, (s, o) -> {});
         clusterSettings.addAffixUpdateConsumer(SETTING_DEFAULTS, (s, o) -> {}, (s, o) -> {});
-        // do an initial load
-        reload(settings);
     }
 
     @Override
