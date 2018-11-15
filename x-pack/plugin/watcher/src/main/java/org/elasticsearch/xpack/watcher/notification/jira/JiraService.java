@@ -59,11 +59,10 @@ public class JiraService extends NotificationService<JiraAccount> {
             Setting.affixKeySetting("xpack.notification.jira.account.", "issue_defaults",
                     (key) -> Setting.groupSetting(key + ".", Property.Dynamic, Property.NodeScope));
 
-    private final HttpClient httpClient;
-
     public JiraService(Settings settings, HttpClient httpClient, ClusterSettings clusterSettings) {
-        super("jira", settings, clusterSettings, JiraService.getSettings());
-        this.httpClient = httpClient;
+        super("jira", settings, clusterSettings, JiraService.getSettings(), (String name, Settings accountSettings) -> {
+            return new JiraAccount(name, accountSettings, httpClient);
+        });
         // for logging individual setting changes
         clusterSettings.addSettingsUpdateConsumer(SETTING_DEFAULT_ACCOUNT, (s) -> {});
         clusterSettings.addAffixUpdateConsumer(SETTING_ALLOW_HTTP, (s, o) -> {}, (s, o) -> {});
@@ -71,11 +70,6 @@ public class JiraService extends NotificationService<JiraAccount> {
         clusterSettings.addAffixUpdateConsumer(SETTING_USER, (s, o) -> {}, (s, o) -> {});
         clusterSettings.addAffixUpdateConsumer(SETTING_PASSWORD, (s, o) -> {}, (s, o) -> {});
         clusterSettings.addAffixUpdateConsumer(SETTING_DEFAULTS, (s, o) -> {}, (s, o) -> {});
-    }
-
-    @Override
-    protected JiraAccount createAccount(String name, Settings settings) {
-        return new JiraAccount(name, settings, httpClient);
     }
 
     public static List<Setting<?>> getSettings() {

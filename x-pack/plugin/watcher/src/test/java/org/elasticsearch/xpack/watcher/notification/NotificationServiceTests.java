@@ -81,13 +81,10 @@ public class NotificationServiceTests extends ESTestCase {
     private static class TestNotificationService extends NotificationService<String> {
 
         TestNotificationService(Settings settings) {
-            super("test");
-            reload(settings);
+            super("test", (String name, Settings accountSettings) -> {
+                return name;
+            });
         }
 
-        @Override
-        protected String createAccount(String name, Settings accountSettings) {
-            return name;
-        }
     }
 }

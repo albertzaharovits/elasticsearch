@@ -5,6 +5,8 @@
  */
 package org.elasticsearch.xpack.watcher.notification.slack;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.elasticsearch.common.settings.ClusterSettings;
 import org.elasticsearch.common.settings.SecureSetting;
 import org.elasticsearch.common.settings.SecureString;
@@ -37,20 +39,16 @@ public class SlackService extends NotificationService<SlackAccount> {
             Setting.affixKeySetting("xpack.notification.slack.account.", "message_defaults",
                     (key) -> Setting.groupSetting(key + ".", Property.Dynamic, Property.NodeScope));
 
-    private final HttpClient httpClient;
+    private static final Logger logger = LogManager.getLogger(SlackService.class);
 
     public SlackService(Settings settings, HttpClient httpClient, ClusterSettings clusterSettings) {
-        super("slack", settings, clusterSettings, SlackService.getSettings());
-        this.httpClient = httpClient;
+        super("slack", settings, clusterSettings, SlackService.getSettings(), (String name, Settings accountSettings) -> {
+            return new SlackAccount(name, accountSettings, accountSettings, httpClient, logger);
+        });
         // for logging individual setting changes
         clusterSettings.addSettingsUpdateConsumer(SETTING_DEFAULT_ACCOUNT, (s) -> {});
         clusterSettings.addAffixUpdateConsumer(SETTING_URL, (s, o) -> {}, (s, o) -> {});
         clusterSettings.addAffixUpdateConsumer(SETTING_DEFAULTS, (s, o) -> {}, (s, o) -> {});
-    }
-
-    @Override
-    protected SlackAccount createAccount(String name, Settings accountSettings) {
-        return new SlackAccount(name, accountSettings, accountSettings, httpClient, logger);
     }
 
     public static List<Setting<?>> getSettings() {

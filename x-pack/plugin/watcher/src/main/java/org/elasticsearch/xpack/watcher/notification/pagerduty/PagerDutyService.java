@@ -37,20 +37,14 @@ public class PagerDutyService extends NotificationService<PagerDutyAccount> {
             Setting.affixKeySetting("xpack.notification.pagerduty.account.", "event_defaults",
                     (key) -> Setting.groupSetting(key + ".", Property.Dynamic, Property.NodeScope));
 
-    private final HttpClient httpClient;
-
     public PagerDutyService(Settings settings, HttpClient httpClient, ClusterSettings clusterSettings) {
-        super("pagerduty", settings, clusterSettings, PagerDutyService.getSettings());
-        this.httpClient = httpClient;
+        super("pagerduty", settings, clusterSettings, PagerDutyService.getSettings(), (String name, Settings accountSettings) -> {
+            return new PagerDutyAccount(name, accountSettings, accountSettings, httpClient);
+        });
         // for logging individual setting changes
         clusterSettings.addSettingsUpdateConsumer(SETTING_DEFAULT_ACCOUNT, (s) -> {});
         clusterSettings.addAffixUpdateConsumer(SETTING_SERVICE_API_KEY, (s, o) -> {}, (s, o) -> {});
         clusterSettings.addAffixUpdateConsumer(SETTING_DEFAULTS, (s, o) -> {}, (s, o) -> {});
-    }
-
-    @Override
-    protected PagerDutyAccount createAccount(String name, Settings accountSettings) {
-        return new PagerDutyAccount(name, accountSettings, accountSettings, httpClient);
     }
 
     public static List<Setting<?>> getSettings() {

@@ -5,6 +5,8 @@
  */
 package org.elasticsearch.xpack.watcher.notification.email;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.settings.ClusterSettings;
 import org.elasticsearch.common.settings.SecureSetting;
@@ -101,11 +103,13 @@ public class EmailService extends NotificationService<Account> {
             Setting.affixKeySetting("xpack.notification.email.account.", "smtp.wait_on_quit",
                     (key) -> Setting.boolSetting(key, true, Property.Dynamic, Property.NodeScope));
 
-    private final CryptoService cryptoService;
+    private static final Logger logger = LogManager.getLogger(EmailService.class);
 
     public EmailService(Settings settings, @Nullable CryptoService cryptoService, ClusterSettings clusterSettings) {
-        super("email", settings, clusterSettings, EmailService.getSettings());
-        this.cryptoService = cryptoService;
+        super("email", settings, clusterSettings, EmailService.getSettings(), (String name, Settings accountSettings) -> {
+            Account.Config config = new Account.Config(name, accountSettings);
+            return new Account(config, cryptoService, logger);
+        });
         // for logging individual setting changes
         clusterSettings.addSettingsUpdateConsumer(SETTING_DEFAULT_ACCOUNT, (s) -> {});
         clusterSettings.addAffixUpdateConsumer(SETTING_PROFILE, (s, o) -> {}, (s, o) -> {});
@@ -125,12 +129,6 @@ public class EmailService extends NotificationService<Account> {
         clusterSettings.addAffixUpdateConsumer(SETTING_SMTP_LOCAL_PORT, (s, o) -> {}, (s, o) -> {});
         clusterSettings.addAffixUpdateConsumer(SETTING_SMTP_SEND_PARTIAL, (s, o) -> {}, (s, o) -> {});
         clusterSettings.addAffixUpdateConsumer(SETTING_SMTP_WAIT_ON_QUIT, (s, o) -> {}, (s, o) -> {});
-    }
-
-    @Override
-    protected Account createAccount(String name, Settings accountSettings) {
-        Account.Config config = new Account.Config(name, accountSettings);
-        return new Account(config, cryptoService, logger);
     }
 
     public EmailSent send(Email email, Authentication auth, Profile profile, String accountName) throws MessagingException {

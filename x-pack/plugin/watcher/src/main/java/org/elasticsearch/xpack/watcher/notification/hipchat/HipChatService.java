@@ -5,6 +5,8 @@
  */
 package org.elasticsearch.xpack.watcher.notification.hipchat;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.elasticsearch.common.settings.ClusterSettings;
 import org.elasticsearch.common.settings.SecureSetting;
 import org.elasticsearch.common.settings.SecureString;
@@ -61,12 +63,17 @@ public class HipChatService extends NotificationService<HipChatAccount> {
                     (key) -> Setting.groupSetting(key + ".", Setting.Property.Dynamic, Setting.Property.NodeScope));
 
 
-    private final HttpClient httpClient;
-    private HipChatServer defaultServer;
+    private static final Logger logger = LogManager.getLogger(HipChatService.class);
 
     public HipChatService(Settings settings, HttpClient httpClient, ClusterSettings clusterSettings) {
-        super("hipchat", settings, clusterSettings, HipChatService.getSettings());
-        this.httpClient = httpClient;
+        super("hipchat", settings, clusterSettings, HipChatService.getSettings(), (String name, Settings accountSettings) -> {
+            HipChatAccount.Profile profile = HipChatAccount.Profile.resolve(accountSettings, "profile", null);
+            if (profile == null) {
+                throw new SettingsException("missing [profile] setting for hipchat account [" + name + "]");
+            }
+            final HipChatServer defaultServer = new HipChatServer(settings.getByPrefix("xpack.notification.hipchat."));
+            return profile.createAccount(name, accountSettings, defaultServer, httpClient, logger);
+        });
         // for logging individual setting changes
         clusterSettings.addSettingsUpdateConsumer(SETTING_DEFAULT_ACCOUNT, (s) -> {});
         clusterSettings.addSettingsUpdateConsumer(SETTING_DEFAULT_HOST, (s) -> {});
@@ -77,21 +84,6 @@ public class HipChatService extends NotificationService<HipChatAccount> {
         clusterSettings.addAffixUpdateConsumer(SETTING_HOST, (s, o) -> {}, (s, o) -> {});
         clusterSettings.addAffixUpdateConsumer(SETTING_PORT, (s, o) -> {}, (s, o) -> {});
         clusterSettings.addAffixUpdateConsumer(SETTING_MESSAGE_DEFAULTS, (s, o) -> {}, (s, o) -> {});
-    }
-
-    @Override
-    public synchronized void reload(Settings settings) {
-        defaultServer = new HipChatServer(settings.getByPrefix("xpack.notification.hipchat."));
-        super.reload(settings);
-    }
-
-    @Override
-    protected HipChatAccount createAccount(String name, Settings accountSettings) {
-        HipChatAccount.Profile profile = HipChatAccount.Profile.resolve(accountSettings, "profile", null);
-        if (profile == null) {
-            throw new SettingsException("missing [profile] setting for hipchat account [" + name + "]");
-        }
-        return profile.createAccount(name, accountSettings, defaultServer, httpClient, logger);
     }
 
     public static List<Setting<?>> getSettings() {

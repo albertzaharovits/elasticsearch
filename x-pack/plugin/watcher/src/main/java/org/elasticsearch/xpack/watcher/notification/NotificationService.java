@@ -22,15 +22,17 @@ import java.util.stream.Collectors;
 /**
  * Basic notification service
  */
-public abstract class NotificationService<Account> extends AbstractComponent {
+public abstract class NotificationService<Account> {
 
     private final String type;
+    private final BiFunction<String, Settings, Account> accountFactory;
     // both are guarded by this
     private Map<String, Account> accounts;
     private Account defaultAccount;
 
-    public NotificationService(String type, Settings settings, ClusterSettings clusterSettings, List<Setting<?>> pluginSettings) {
-        this(type);
+    public NotificationService(String type, Settings settings, ClusterSettings clusterSettings, List<Setting<?>> pluginSettings,
+            BiFunction<String, Settings, Account> accountFactory) {
+        this(type, accountFactory);
         final List<Setting<?>> dynamicPluginSettings = pluginSettings.stream().filter(s -> s.isDynamic() && s.hasNodeScope())
                 .collect(Collectors.toList()); 
         final List<Setting<?>> securePluginSettings = pluginSettings.stream().filter(s -> s instanceof SecureSetting<?>)
@@ -39,15 +41,15 @@ public abstract class NotificationService<Account> extends AbstractComponent {
     }
 
     // Used for testing only
-    NotificationService(String type) {
+    NotificationService(String type, BiFunction<String, Settings, Account> accountFactory) {
         this.type = type;
+        this.accountFactory = accountFactory;
     }
 
     public synchronized void reload(Settings settings) {
-        buildAccounts(settings, this::createAccount);
+        // settings has new secure settings but all the other are those from config file 
+        buildAccounts(settings, this.accountFactory);
     }
-
-    protected abstract Account createAccount(String name, Settings accountSettings);
 
     public Account getAccount(String name) {
         // note this is not final since we mock it in tests and that causes
