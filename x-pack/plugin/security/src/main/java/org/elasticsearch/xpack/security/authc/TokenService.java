@@ -351,7 +351,7 @@ public final class TokenService {
                                     Map<String, Object> userTokenSource =
                                         (Map<String, Object>) accessTokenSource.get("user_token");
                                     listener.onResponse(UserToken.fromSourceMap(userTokenSource));
-                                }
+                                }               ;                 
                             } else {
                                 onFailure.accept(
                                     new IllegalStateException("token document is missing and must be present"));
@@ -423,28 +423,6 @@ public final class TokenService {
         }
     }
 
-    private void getKeyAsync(BytesKey decodedSalt, KeyAndCache keyAndCache, ActionListener<SecretKey> listener) {
-        final SecretKey decodeKey = keyAndCache.getKey(decodedSalt);
-        if (decodeKey != null) {
-            listener.onResponse(decodeKey);
-        } else {
-            /* As a measure of protected against DOS, we can pass requests requiring a key
-             * computation off to a single thread executor. For normal usage, the initial
-             * request(s) that require a key computation will be delayed and there will be
-             * some additional latency.
-             */
-            client.threadPool().executor(THREAD_POOL_NAME)
-                    .submit(new KeyComputingRunnable(decodedSalt, listener, keyAndCache));
-        }
-    }
-
-    private static void decryptTokenId(StreamInput in, Cipher cipher, Version version, ActionListener<String> listener) throws IOException {
-        try (CipherInputStream cis = new CipherInputStream(in, cipher); StreamInput decryptedInput = new InputStreamStreamInput(cis)) {
-            decryptedInput.setVersion(version);
-            listener.onResponse(decryptedInput.readString());
-        }
-    }
-
     /**
      * This method performs the steps necessary to invalidate a token so that it may no longer be
      * used. The process of invalidation involves performing an update to the token document and setting
@@ -462,7 +440,7 @@ public final class TokenService {
                 if (userToken == null) {
                     listener.onFailure(traceLog("invalidate token", tokenString, malformedTokenException()));
                 } else {
-                    indexInvalidation(Collections.singleton(userToken.getId()), listener, backoff, "access_token", null);
+                    indexInvalidation(Collections.singleton(userToken.getId()), backoff, "access_token", null, listener);
                 }
             }, listener::onFailure));
         }
@@ -481,7 +459,7 @@ public final class TokenService {
         } else {
             maybeStartTokenRemover();
             final Iterator<TimeValue> backoff = DEFAULT_BACKOFF.iterator();
-            indexInvalidation(Collections.singleton(userToken.getId()), listener, backoff, "access_token", null);
+            indexInvalidation(Collections.singleton(userToken.getId()), backoff, "access_token", null, listener);
         }
     }
 
@@ -503,7 +481,7 @@ public final class TokenService {
             findTokenFromRefreshToken(refreshToken, backoff,
                 ActionListener.wrap(searchResponse -> {
                     final String docId = getTokenIdFromDocumentId(searchResponse.getHits().getAt(0).getId());
-                    indexInvalidation(Collections.singletonList(docId), listener, backoff, "refresh_token", null);
+                    indexInvalidation(Collections.singletonList(docId), backoff, "refresh_token", null, listener);
                 }, listener::onFailure));
         }
     }
@@ -561,9 +539,9 @@ public final class TokenService {
         // Invalidate the refresh tokens first so that they cannot be used to get new
         // access tokens while we invalidate the access tokens we currently know about
         final Iterator<TimeValue> backoff = DEFAULT_BACKOFF.iterator();
-        indexInvalidation(accessTokenIds, ActionListener.wrap(result ->
-                indexInvalidation(accessTokenIds, listener, backoff, "access_token", result),
-            listener::onFailure), backoff, "refresh_token", null);
+        indexInvalidation(accessTokenIds, backoff, "refresh_token", null, ActionListener.wrap(result ->
+                indexInvalidation(accessTokenIds, backoff, "access_token", result, listener),
+            listener::onFailure));
     }
 
     /**
@@ -572,20 +550,20 @@ public final class TokenService {
      * an exponential backoff policy.
      *
      * @param tokenIds        the tokens to invalidate
-     * @param listener        the listener to notify upon completion
      * @param backoff         the amount of time to delay between attempts
      * @param srcPrefix       the prefix to use when constructing the doc to update, either refresh_token or access_token depending on
      *                        what type of tokens should be invalidated
      * @param previousResult  if this not the initial attempt for invalidation, it contains the result of invalidating
      *                        tokens up to the point of the retry. This result is added to the result of the current attempt
+     * @param listener        the listener to notify upon completion
      */
-    private void indexInvalidation(Collection<String> tokenIds, ActionListener<TokensInvalidationResult> listener,
-                                   Iterator<TimeValue> backoff, String srcPrefix, @Nullable TokensInvalidationResult previousResult) {
+    private void indexInvalidation(Collection<String> tokenIds, Iterator<TimeValue> backoff, String srcPrefix,
+                                   @Nullable TokensInvalidationResult previousResult, ActionListener<TokensInvalidationResult> listener) {
         if (tokenIds.isEmpty()) {
             logger.warn("No [{}] tokens provided for invalidation", srcPrefix);
             listener.onFailure(invalidGrantException("No tokens provided for invalidation"));
         } else {
-            BulkRequestBuilder bulkRequestBuilder = client.prepareBulk();
+            final BulkRequestBuilder bulkRequestBuilder = client.prepareBulk();
             for (String tokenId : tokenIds) {
                 UpdateRequest request = client.prepareUpdate(SecurityIndexManager.SECURITY_INDEX_NAME, TYPE, getTokenDocumentId(tokenId))
                     .setDoc(srcPrefix, Collections.singletonMap("invalidated", true))
@@ -634,7 +612,7 @@ public final class TokenService {
                                 TokensInvalidationResult incompleteResult = new TokensInvalidationResult(invalidated, previouslyInvalidated,
                                     failedRequestResponses);
                                 client.threadPool().schedule(
-                                    () -> indexInvalidation(retryTokenDocIds, listener, backoff, srcPrefix, incompleteResult),
+                                    () -> indexInvalidation(retryTokenDocIds, backoff, srcPrefix, incompleteResult, listener),
                                     backoff.next(), GENERIC);
                             } else {
                                 logger.warn("failed to invalidate [{}] tokens out of [{}] after all retries",
@@ -651,7 +629,7 @@ public final class TokenService {
                         if (isShardNotAvailableException(cause) && backoff.hasNext()) {
                             logger.debug("failed to invalidate tokens, retrying ");
                             client.threadPool().schedule(
-                                () -> indexInvalidation(tokenIds, listener, backoff, srcPrefix, previousResult), backoff.next(), GENERIC);
+                                () -> indexInvalidation(tokenIds, backoff, srcPrefix, previousResult, listener), backoff.next(), GENERIC);
                         } else {
                             listener.onFailure(e);
                         }
@@ -1170,6 +1148,28 @@ public final class TokenService {
         }
     }
 
+    private void getKeyAsync(BytesKey decodedSalt, KeyAndCache keyAndCache, ActionListener<SecretKey> listener) {
+        final SecretKey decodeKey = keyAndCache.getKey(decodedSalt);
+        if (decodeKey != null) {
+            listener.onResponse(decodeKey);
+        } else {
+            /* As a measure of protected against DOS, we can pass requests requiring a key
+             * computation off to a single thread executor. For normal usage, the initial
+             * request(s) that require a key computation will be delayed and there will be
+             * some additional latency.
+             */
+            client.threadPool().executor(THREAD_POOL_NAME)
+                    .submit(new KeyComputingRunnable(decodedSalt, listener, keyAndCache));
+        }
+    }
+
+    private static void decryptTokenId(StreamInput in, Cipher cipher, Version version, ActionListener<String> listener) throws IOException {
+        try (CipherInputStream cis = new CipherInputStream(in, cipher); StreamInput decryptedInput = new InputStreamStreamInput(cis)) {
+            decryptedInput.setVersion(version);
+            listener.onResponse(decryptedInput.readString());
+        }
+    }
+
     /**
      * Parses a token document into a Tuple of a {@link UserToken} and a String representing the corresponding refresh_token
      *
@@ -1178,7 +1178,7 @@ public final class TokenService {
      * @return A {@link Tuple} of access-token and refresh-token-id or null if a Predicate is defined and the userToken source doesn't
      * satisfy it
      */
-    private Tuple<UserToken, String> parseTokensFromDocument(Map<String, Object> source, @Nullable Predicate<Map<String, Object>> filter)
+    private static Tuple<UserToken, String> parseTokensFromDocument(Map<String, Object> source, @Nullable Predicate<Map<String, Object>> filter)
         throws IOException {
         final String refreshToken = (String) ((Map<String, Object>) source.get("refresh_token")).get("token");
         final Map<String, Object> userTokenSource = (Map<String, Object>)
@@ -1503,7 +1503,7 @@ public final class TokenService {
         return expiredTokenRemover.isExpirationInProgress();
     }
 
-    private class KeyComputingRunnable extends AbstractRunnable {
+    private static final class KeyComputingRunnable extends AbstractRunnable {
 
         private final BytesKey decodedSalt;
         private final ActionListener<SecretKey> listener;
@@ -1682,7 +1682,7 @@ public final class TokenService {
                 }, listener::onFailure), tokenMetaData));
     }
 
-    private final class TokenMetadataPublishAction extends AckedClusterStateUpdateTask<ClusterStateUpdateResponse> {
+    private static final class TokenMetadataPublishAction extends AckedClusterStateUpdateTask<ClusterStateUpdateResponse> {
 
         private final TokenMetaData tokenMetaData;
 
@@ -1858,7 +1858,6 @@ public final class TokenService {
             return salt;
         }
     }
-
 
     private static final class TokenKeys {
         final Map<BytesKey, KeyAndCache> cache;
