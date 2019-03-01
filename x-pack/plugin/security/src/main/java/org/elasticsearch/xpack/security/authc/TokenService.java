@@ -74,6 +74,7 @@ import org.elasticsearch.index.query.QueryBuilders;
 import org.elasticsearch.index.seqno.SequenceNumbers;
 import org.elasticsearch.rest.RestStatus;
 import org.elasticsearch.search.SearchHit;
+import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.xpack.core.XPackField;
 import org.elasticsearch.xpack.core.XPackPlugin;
 import org.elasticsearch.xpack.core.XPackSettings;
@@ -201,7 +202,6 @@ public final class TokenService {
                         SecurityIndexManager securityIndex, ClusterService clusterService) throws GeneralSecurityException {
         byte[] saltArr = new byte[SALT_BYTES];
         secureRandom.nextBytes(saltArr);
-
         final SecureString tokenPassphrase = generateTokenKey();
         this.settings = settings;
         this.clock = clock.withZone(ZoneOffset.UTC);
@@ -500,11 +500,11 @@ public final class TokenService {
         } else {
             maybeStartTokenRemover();
             final Iterator<TimeValue> backoff = DEFAULT_BACKOFF.iterator();
-            findTokenFromRefreshToken(refreshToken,
+            findTokenFromRefreshToken(refreshToken, backoff,
                 ActionListener.wrap(searchResponse -> {
                     final String docId = getTokenIdFromDocumentId(searchResponse.getHits().getAt(0).getId());
                     indexInvalidation(Collections.singletonList(docId), listener, backoff, "refresh_token", null);
-                }, listener::onFailure), backoff);
+                }, listener::onFailure));
         }
     }
 
@@ -666,47 +666,49 @@ public final class TokenService {
         ensureEnabled();
         final Instant refreshRequested = clock.instant();
         final Iterator<TimeValue> backoff = DEFAULT_BACKOFF.iterator();
-        findTokenFromRefreshToken(refreshToken,
+        findTokenFromRefreshToken(refreshToken, backoff,
             ActionListener.wrap(searchResponse -> {
                 final Authentication clientAuth = Authentication.readFromContext(client.threadPool().getThreadContext());
                 final SearchHit tokenDocHit = searchResponse.getHits().getHits()[0];
                 final String tokenDocId = tokenDocHit.getId();
                 innerRefresh(tokenDocId, tokenDocHit.getSourceAsMap(), tokenDocHit.getSeqNo(), tokenDocHit.getPrimaryTerm(), clientAuth,
                     listener, backoff, refreshRequested);
-            }, listener::onFailure),
-            backoff);
+            }, listener::onFailure));
     }
 
     /**
      * Performs an asynchronous search request for the token document that contains the {@code refreshToken} and calls the listener with the
      * {@link SearchResponse}. In case of recoverable errors the SearchRequest is retried using an exponential backoff policy.
      */
-    private void findTokenFromRefreshToken(String refreshToken, ActionListener<SearchResponse> listener,
-                                           Iterator<TimeValue> backoff) {
-        SearchRequest request = client.prepareSearch(SecurityIndexManager.SECURITY_INDEX_NAME)
-            .setQuery(QueryBuilders.boolQuery()
-                .filter(QueryBuilders.termQuery("doc_type", TOKEN_DOC_TYPE))
-                .filter(QueryBuilders.termQuery("refresh_token.token", refreshToken)))
-            .seqNoAndPrimaryTerm(true)
-            .request();
-
+    private void findTokenFromRefreshToken(String refreshToken, Iterator<TimeValue> backoff, ActionListener<SearchResponse> listener) {
+        final Consumer<Exception> onFailure = ex -> listener.onFailure(traceLog("find by refresh token", refreshToken, ex));
         final SecurityIndexManager frozenSecurityIndex = securityIndex.freeze();
         if (frozenSecurityIndex.indexExists() == false) {
             logger.warn("security index does not exist therefore refresh token [{}] cannot be validated", refreshToken);
-            listener.onFailure(invalidGrantException("could not refresh the requested token"));
+            onFailure.accept(invalidGrantException("could not refresh the requested token"));
         } else if (frozenSecurityIndex.isAvailable() == false) {
-            logger.debug("security index is not available to find token from refresh token, retrying");
-            client.threadPool().scheduleWithFixedDelay(
-                () -> findTokenFromRefreshToken(refreshToken, listener, backoff), backoff.next(), GENERIC);
+            if (backoff.hasNext()) {
+                logger.debug("security index is not available to find token from refresh token, retrying");
+                client.threadPool().scheduleWithFixedDelay(
+                    () -> findTokenFromRefreshToken(refreshToken, backoff, listener), backoff.next(), GENERIC);
+            } else {
+                logger.warn("could not find token document with refresh_token [{}] after all retries", refreshToken);
+                onFailure.accept(invalidGrantException("could not refresh the requested token"));
+            }
         } else {
-            Consumer<Exception> onFailure = ex -> listener.onFailure(traceLog("find by refresh token", refreshToken, ex));
-            securityIndex.checkIndexVersionThenExecute(listener::onFailure, () ->
-                executeAsyncWithOrigin(client.threadPool().getThreadContext(), SECURITY_ORIGIN, request,
+            final SearchRequest searchRequest = client.prepareSearch(SecurityIndexManager.SECURITY_INDEX_NAME)
+                    .setQuery(QueryBuilders.boolQuery()
+                        .filter(QueryBuilders.termQuery("doc_type", TOKEN_DOC_TYPE))
+                        .filter(QueryBuilders.termQuery("refresh_token.token", refreshToken)))
+                    .seqNoAndPrimaryTerm(true)
+                    .request();
+            securityIndex.checkIndexVersionThenExecute(onFailure, () ->
+                executeAsyncWithOrigin(client.threadPool().getThreadContext(), SECURITY_ORIGIN, searchRequest,
                     ActionListener.<SearchResponse>wrap(searchResponse -> {
                         if (searchResponse.isTimedOut()) {
                             if (backoff.hasNext()) {
                                 client.threadPool().scheduleWithFixedDelay(
-                                    () -> findTokenFromRefreshToken(refreshToken, listener, backoff), backoff.next(), GENERIC);
+                                    () -> findTokenFromRefreshToken(refreshToken, backoff, listener), backoff.next(), GENERIC);
                             } else {
                                 logger.warn("could not find token document with refresh_token [{}] after all retries", refreshToken);
                                 onFailure.accept(invalidGrantException("could not refresh the requested token"));
@@ -724,7 +726,7 @@ public final class TokenService {
                             if (backoff.hasNext()) {
                                 logger.debug("failed to find token for refresh token [{}], retrying", refreshToken);
                                 client.threadPool().scheduleWithFixedDelay(
-                                    () -> findTokenFromRefreshToken(refreshToken, listener, backoff), backoff.next(), GENERIC);
+                                    () -> findTokenFromRefreshToken(refreshToken, backoff, listener), backoff.next(), GENERIC);
                             } else {
                                 logger.warn("could not find token document with refresh_token [{}] after all retries", refreshToken);
                                 onFailure.accept(invalidGrantException("could not refresh the requested token"));
@@ -753,7 +755,7 @@ public final class TokenService {
     private void innerRefresh(String tokenDocId, Map<String, Object> source, long seqNo, long primaryTerm, Authentication clientAuth,
                               ActionListener<Tuple<UserToken, String>> listener, Iterator<TimeValue> backoff, Instant refreshRequested) {
         logger.debug("Attempting to refresh token [{}]", tokenDocId);
-        Consumer<Exception> onFailure = ex -> listener.onFailure(traceLog("refresh token", tokenDocId, ex));
+        final Consumer<Exception> onFailure = ex -> listener.onFailure(traceLog("refresh token", tokenDocId, ex));
         final Optional<ElasticsearchSecurityException> invalidSource = checkTokenDocForRefresh(source, clientAuth);
         if (invalidSource.isPresent()) {
             onFailure.accept(invalidSource.get());
