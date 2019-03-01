@@ -22,6 +22,7 @@ import org.elasticsearch.xpack.core.security.authc.Authentication;
 import org.elasticsearch.xpack.core.security.authc.AuthenticationResult;
 import org.elasticsearch.xpack.security.authc.AuthenticationService;
 import org.elasticsearch.xpack.security.authc.TokenService;
+import org.elasticsearch.xpack.security.authc.UserToken;
 import org.elasticsearch.xpack.security.authc.saml.SamlRealm;
 import org.elasticsearch.xpack.security.authc.saml.SamlToken;
 
@@ -61,13 +62,14 @@ public final class TransportSamlAuthenticateAction extends HandledTransportActio
                 }
                 assert authentication != null : "authentication should never be null at this point";
                 final Map<String, Object> tokenMeta = (Map<String, Object>) result.getMetadata().get(SamlRealm.CONTEXT_TOKEN_DATA);
-                tokenService.createUserToken(authentication, originatingAuthentication,
-                        ActionListener.wrap(tuple -> {
-                            final String tokenString = tokenService.getAccessTokenAsString(tuple.v1());
-                            final TimeValue expiresIn = tokenService.getExpirationDelay();
-                            listener.onResponse(
-                                    new SamlAuthenticateResponse(authentication.getUser().principal(), tokenString, tuple.v2(), expiresIn));
-                        }, listener::onFailure), tokenMeta, true);
+                tokenService.createUserToken(authentication, originatingAuthentication, tokenMeta, true, ActionListener.wrap(tuple -> {
+                    final UserToken userToken = tuple.v1();
+                    final String refreshToken = tuple.v2();
+                    final String userTokenString = tokenService.getAccessTokenAsString(userToken);
+                    final TimeValue expiresIn = tokenService.getExpirationDelay();
+                    listener.onResponse(
+                            new SamlAuthenticateResponse(authentication.getUser().principal(), userTokenString, refreshToken, expiresIn));
+                }, listener::onFailure));
             }, e -> {
                 logger.debug(() -> new ParameterizedMessage("SamlToken [{}] could not be authenticated", saml), e);
                 listener.onFailure(e);

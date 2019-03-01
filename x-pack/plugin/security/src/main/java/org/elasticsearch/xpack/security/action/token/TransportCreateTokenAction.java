@@ -20,8 +20,8 @@ import org.elasticsearch.xpack.core.security.authc.Authentication;
 import org.elasticsearch.xpack.core.security.authc.support.UsernamePasswordToken;
 import org.elasticsearch.xpack.security.authc.AuthenticationService;
 import org.elasticsearch.xpack.security.authc.TokenService;
+import org.elasticsearch.xpack.security.authc.UserToken;
 
-import java.io.IOException;
 import java.util.Collections;
 
 /**
@@ -87,18 +87,16 @@ public final class TransportCreateTokenAction extends HandledTransportAction<Cre
 
     private void createToken(CreateTokenRequest request, Authentication authentication, Authentication originatingAuth,
                              boolean includeRefreshToken, ActionListener<CreateTokenResponse> listener) {
-        try {
-            tokenService.createUserToken(authentication, originatingAuth, ActionListener.wrap(tuple -> {
-                final String tokenStr = tokenService.getAccessTokenAsString(tuple.v1());
-                final String scope = getResponseScopeValue(request.getScope());
-
-                final CreateTokenResponse response =
-                    new CreateTokenResponse(tokenStr, tokenService.getExpirationDelay(), scope, tuple.v2());
-                listener.onResponse(response);
-            }, listener::onFailure), Collections.emptyMap(), includeRefreshToken);
-        } catch (IOException e) {
-            listener.onFailure(e);
-        }
+        tokenService.createUserToken(authentication, originatingAuth, Collections.emptyMap(), includeRefreshToken,
+                ActionListener.wrap(tuple -> {
+                    final UserToken userToken = tuple.v1();
+                    final String refreshToken = tuple.v2();
+                    final String userTokenString = tokenService.getAccessTokenAsString(userToken);
+                    final String scope = getResponseScopeValue(request.getScope());
+                    final CreateTokenResponse response = new CreateTokenResponse(userTokenString, tokenService.getExpirationDelay(), scope,
+                            refreshToken);
+                    listener.onResponse(response);
+                }, listener::onFailure));
     }
 
     static String getResponseScopeValue(String requestScope) {

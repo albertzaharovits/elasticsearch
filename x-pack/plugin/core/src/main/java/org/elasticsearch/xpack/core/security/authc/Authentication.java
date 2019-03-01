@@ -13,6 +13,7 @@ import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.util.concurrent.ThreadContext;
 import org.elasticsearch.common.xcontent.ToXContentObject;
 import org.elasticsearch.common.xcontent.XContentBuilder;
+import org.elasticsearch.xpack.core.security.authc.Authentication.AuthenticationType;
 import org.elasticsearch.xpack.core.security.user.InternalUserSerializationHelper;
 import org.elasticsearch.xpack.core.security.user.User;
 
@@ -91,6 +92,10 @@ public class Authentication implements ToXContentObject {
 
     public Map<String, Object> getMetadata() {
         return metadata;
+    }
+
+    public Authentication createTokenAuthentication(Version version) {
+        return new Authentication(getUser(), getAuthenticatedBy(), getLookedUpBy(), version, AuthenticationType.TOKEN, getMetadata());
     }
 
     public static Authentication readFromContext(ThreadContext ctx) throws IOException, IllegalArgumentException {

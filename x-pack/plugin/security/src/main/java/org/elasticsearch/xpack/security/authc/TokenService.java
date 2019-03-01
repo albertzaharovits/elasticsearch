@@ -47,6 +47,7 @@ import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.Priority;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.UUIDs;
+import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.cache.Cache;
 import org.elasticsearch.common.cache.CacheBuilder;
 import org.elasticsearch.common.collect.Tuple;
@@ -65,6 +66,7 @@ import org.elasticsearch.common.util.concurrent.ThreadContext;
 import org.elasticsearch.common.util.iterable.Iterables;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.common.xcontent.XContentFactory;
+import org.elasticsearch.common.xcontent.XContentType;
 import org.elasticsearch.core.internal.io.IOUtils;
 import org.elasticsearch.index.engine.VersionConflictEngineException;
 import org.elasticsearch.index.query.BoolQueryBuilder;
@@ -77,7 +79,6 @@ import org.elasticsearch.xpack.core.XPackPlugin;
 import org.elasticsearch.xpack.core.XPackSettings;
 import org.elasticsearch.xpack.core.security.ScrollHelper;
 import org.elasticsearch.xpack.core.security.authc.Authentication;
-import org.elasticsearch.xpack.core.security.authc.Authentication.AuthenticationType;
 import org.elasticsearch.xpack.core.security.authc.KeyAndTimestamp;
 import org.elasticsearch.xpack.core.security.authc.TokenMetaData;
 import org.elasticsearch.xpack.core.security.authc.support.TokensInvalidationResult;
@@ -228,10 +229,9 @@ public final class TokenService {
      * Creates a token based on the provided authentication and metadata with an auto-generated token id.
      * The created token will be stored in the security index.
      */
-    public void createUserToken(Authentication authentication, Authentication originatingClientAuth,
-                                ActionListener<Tuple<UserToken, String>> listener, Map<String, Object> metadata,
-                                boolean includeRefreshToken) throws IOException {
-        createUserToken(UUIDs.randomBase64UUID(), authentication, originatingClientAuth, listener, metadata, includeRefreshToken);
+    public void createUserToken(Authentication authentication, Authentication originatingClientAuth, Map<String, Object> metadata,
+            boolean includeRefreshToken, ActionListener<Tuple<UserToken, String>> listener) {
+        createUserToken(UUIDs.randomBase64UUID(), authentication, originatingClientAuth, metadata, includeRefreshToken, listener);
     }
 
     /**
@@ -239,8 +239,7 @@ public final class TokenService {
      * The created token will be stored in the security index.
      */
     private void createUserToken(String userTokenId, Authentication authentication, Authentication originatingClientAuth,
-                                 ActionListener<Tuple<UserToken, String>> listener, Map<String, Object> metadata,
-                                 boolean includeRefreshToken) throws IOException {
+            Map<String, Object> metadata, boolean includeRefreshToken, ActionListener<Tuple<UserToken, String>> listener) {
         ensureEnabled();
         if (authentication == null) {
             listener.onFailure(traceLog("create token", new IllegalArgumentException("authentication must be provided")));
@@ -251,70 +250,34 @@ public final class TokenService {
             final Instant created = clock.instant();
             final Instant expiration = getExpirationTime(created);
             final Version version = clusterService.state().nodes().getMinNodeVersion();
-            final Authentication tokenAuth = new Authentication(authentication.getUser(), authentication.getAuthenticatedBy(),
-                authentication.getLookedUpBy(), version, AuthenticationType.TOKEN, authentication.getMetadata());
+            final Authentication tokenAuth = authentication.createTokenAuthentication(version);
             final UserToken userToken = new UserToken(userTokenId, version, tokenAuth, expiration, metadata);
             final String refreshToken = includeRefreshToken ? UUIDs.randomBase64UUID() : null;
-
-            try (XContentBuilder builder = XContentFactory.jsonBuilder()) {
-                builder.startObject();
-                builder.field("doc_type", TOKEN_DOC_TYPE);
-                builder.field("creation_time", created.toEpochMilli());
-                if (includeRefreshToken) {
-                    builder.startObject("refresh_token")
-                        .field("token", refreshToken)
-                        .field("invalidated", false)
-                        .field("refreshed", false)
-                        .startObject("client")
-                            .field("type", "unassociated_client")
-                            .field("user", originatingClientAuth.getUser().principal())
-                            .field("realm", originatingClientAuth.getAuthenticatedBy().getName())
-                        .endObject()
-                        .endObject();
-                }
-                builder.startObject("access_token")
-                        .field("invalidated", false)
-                        .field("user_token", userToken)
-                        .field("realm", authentication.getAuthenticatedBy().getName())
-                        .endObject();
-                builder.endObject();
-                final String documentId = getTokenDocumentId(userToken);
-                IndexRequest request =
-                        client.prepareIndex(SecurityIndexManager.SECURITY_INDEX_NAME, TYPE, documentId)
-                                .setOpType(OpType.CREATE)
-                                .setSource(builder)
-                                .setRefreshPolicy(RefreshPolicy.WAIT_UNTIL)
-                                .request();
-                securityIndex.prepareIndexIfNeededThenExecute(ex -> listener.onFailure(traceLog("prepare security index", documentId, ex)),
-                    () -> executeAsyncWithOrigin(client, SECURITY_ORIGIN, IndexAction.INSTANCE, request,
-                        ActionListener.wrap(indexResponse -> listener.onResponse(new Tuple<>(userToken, refreshToken)),
-                            listener::onFailure))
-                );
+            final BytesReference tokenDocument;
+            try {
+                tokenDocument = createTokenDocument(created, expiration, refreshToken, originatingClientAuth, userToken, authentication);
+            } catch (IOException e) {
+                // unexpected exception
+                listener.onFailure(traceLog("create token", e));
+                return;
             }
-        }
-    }
-
-    /**
-     * Reconstructs the {@link UserToken} from the existing {@code userTokenSource} and call the listener with the {@link UserToken} and the
-     * refresh token string
-     */
-    private void reIssueTokens(Map<String, Object> userTokenSource,
-                               String refreshToken, ActionListener<Tuple<UserToken, String>> listener) {
-        final String authString = (String) userTokenSource.get("authentication");
-        final Integer version = (Integer) userTokenSource.get("version");
-        final Map<String, Object> metadata = (Map<String, Object>) userTokenSource.get("metadata");
-        final String id = (String) userTokenSource.get("id");
-        final Long expiration = (Long) userTokenSource.get("expiration_time");
-
-        Version authVersion = Version.fromId(version);
-        try (StreamInput in = StreamInput.wrap(Base64.getDecoder().decode(authString))) {
-            in.setVersion(authVersion);
-            Authentication authentication = new Authentication(in);
-            UserToken userToken = new UserToken(id, authVersion, authentication, Instant.ofEpochMilli(expiration), metadata);
-            listener.onResponse(new Tuple<>(userToken, refreshToken));
-        } catch (IOException e) {
-            logger.error("Unable to decode existing user token", e);
-            listener.onFailure(invalidGrantException("could not refresh the requested token"));
+            final String documentId = getTokenDocumentId(userToken);
+            final IndexRequest request = client
+                    .prepareIndex(SecurityIndexManager.SECURITY_INDEX_NAME, TYPE, documentId)
+                    .setOpType(OpType.CREATE)
+                    .setSource(tokenDocument, XContentType.JSON)
+                    .setRefreshPolicy(RefreshPolicy.WAIT_UNTIL)
+                    .request();
+            securityIndex.prepareIndexIfNeededThenExecute(ex -> listener.onFailure(traceLog("prepare security index", documentId, ex)),
+                    () -> executeAsyncWithOrigin(client, SECURITY_ORIGIN, IndexAction.INSTANCE, request,
+                            ActionListener.wrap(indexResponse -> {
+                                if (indexResponse.status() == RestStatus.CREATED) {
+                                    listener.onResponse(new Tuple<>(userToken, refreshToken));
+                                } else {
+                                    listener.onFailure(traceLog("create token",
+                                            new IllegalStateException("Unexpected doc write response: " + indexResponse)));
+                                }
+                            }, listener::onFailure)));
         }
     }
 
@@ -329,19 +292,13 @@ public final class TokenService {
             if (token == null) {
                 listener.onResponse(null);
             } else {
-                try {
-                    decodeToken(token, ActionListener.wrap(userToken -> {
-                        if (userToken != null) {
-                            checkIfTokenIsValid(userToken, listener);
-                        } else {
-                            listener.onResponse(null);
-                        }
-                    }, listener::onFailure));
-                } catch (IOException e) {
-                    // could happen with a token that is not ours
-                    logger.debug("invalid token", e);
-                    listener.onResponse(null);
-                }
+                decodeToken(token, ActionListener.wrap(userToken -> {
+                    if (userToken != null) {
+                        checkIfTokenIsValid(userToken, listener);
+                    } else {
+                        listener.onResponse(null);
+                    }
+                }, listener::onFailure));
             }
         } else {
             listener.onResponse(null);
@@ -352,8 +309,7 @@ public final class TokenService {
      * Reads the authentication and metadata from the given token.
      * This method does not validate whether the token is expired or not.
      */
-    public void getAuthenticationAndMetaData(String token, ActionListener<Tuple<Authentication, Map<String, Object>>> listener)
-            throws IOException {
+    public void getAuthenticationAndMetaData(String token, ActionListener<Tuple<Authentication, Map<String, Object>>> listener) {
         decodeToken(token, ActionListener.wrap(
                 userToken -> {
                     if (userToken == null) {
@@ -422,49 +378,48 @@ public final class TokenService {
      * we can restrain the amount of resources consumed by the key computation to a single thread.
      * For tokens created in an after 7.1.0 cluster, the token is just the token document Id so this is used directly without decryption
      */
-    void decodeToken(String token, ActionListener<UserToken> listener) throws IOException {
+    void decodeToken(String token, ActionListener<UserToken> listener) {
         // We intentionally do not use try-with resources since we need to keep the stream open if we need to compute a key!
-        byte[] bytes = token.getBytes(StandardCharsets.UTF_8);
-        StreamInput in = new InputStreamStreamInput(Base64.getDecoder().wrap(new ByteArrayInputStream(bytes)), bytes.length);
-        final Version version = Version.readVersion(in);
-        if (version.onOrAfter(Version.V_8_0_0)) {
-            // The token was created in a > 7.1.0 cluster so it contains the tokenId as a String
-            String usedTokenId = in.readString();
-            getUserTokenFromId(usedTokenId, listener);
-        } else {
-            // The token was created in a < 7.1.0 cluster so we need to decrypt it to get the tokenId
-            in.setVersion(version);
-            if (in.available() < MINIMUM_BASE64_BYTES) {
-                logger.debug("invalid token, smaller than [{}] bytes", MINIMUM_BASE64_BYTES);
-                listener.onResponse(null);
-                return;
-            }
-            final BytesKey decodedSalt = new BytesKey(in.readByteArray());
-            final BytesKey passphraseHash = new BytesKey(in.readByteArray());
-            KeyAndCache keyAndCache = keyCache.get(passphraseHash);
-            if (keyAndCache != null) {
-                getKeyAsync(decodedSalt, keyAndCache, ActionListener.wrap(decodeKey -> {
-                    try {
-                        final byte[] iv = in.readByteArray();
-                        final Cipher cipher = getDecryptionCipher(iv, decodeKey, version, decodedSalt);
-                        decryptTokenId(in, cipher, version, ActionListener.wrap(tokenId -> getUserTokenFromId(tokenId, listener),
-                            listener::onFailure));
-                    } catch (GeneralSecurityException e) {
-                        // could happen with a token that is not ours
-                        logger.warn("invalid token", e);
-                        listener.onResponse(null);
-                    } finally {
-                        in.close();
-                    }
-                }, e -> {
-                    IOUtils.closeWhileHandlingException(in);
-                    listener.onFailure(e);
-                }));
+        final byte[] bytes = token.getBytes(StandardCharsets.UTF_8);
+        try (StreamInput in = new InputStreamStreamInput(Base64.getDecoder().wrap(new ByteArrayInputStream(bytes)), bytes.length)) {
+            final Version version = Version.readVersion(in);
+            if (version.onOrAfter(Version.V_8_0_0)) {
+                // The token was created in a > 7.1.0 cluster so it contains the tokenId as a String
+                String usedTokenId = in.readString();
+                getUserTokenFromId(usedTokenId, listener);
             } else {
-                IOUtils.closeWhileHandlingException(in);
-                logger.debug("invalid key {} key: {}", passphraseHash, keyCache.cache.keySet());
-                listener.onResponse(null);
+                // The token was created in a < 7.1.0 cluster so we need to decrypt it to get the tokenId
+                in.setVersion(version);
+                if (in.available() < MINIMUM_BASE64_BYTES) {
+                    logger.debug("invalid token, smaller than [{}] bytes", MINIMUM_BASE64_BYTES);
+                    listener.onResponse(null);
+                    return;
+                }
+                final BytesKey decodedSalt = new BytesKey(in.readByteArray());
+                final BytesKey passphraseHash = new BytesKey(in.readByteArray());
+                KeyAndCache keyAndCache = keyCache.get(passphraseHash);
+                if (keyAndCache != null) {
+                    getKeyAsync(decodedSalt, keyAndCache, ActionListener.wrap(decodeKey -> {
+                        try {
+                            final byte[] iv = in.readByteArray();
+                            final Cipher cipher = getDecryptionCipher(iv, decodeKey, version, decodedSalt);
+                            decryptTokenId(in, cipher, version, ActionListener.wrap(tokenId -> getUserTokenFromId(tokenId, listener),
+                                    listener::onFailure));
+                        } catch (GeneralSecurityException e) {
+                            // could happen with a token that is not ours
+                            logger.warn("invalid token", e);
+                            listener.onResponse(null);
+                        }
+                    }, listener::onFailure));
+                } else {
+                    logger.debug("invalid key {} key: {}", passphraseHash, keyCache.cache.keySet());
+                    listener.onResponse(null);
+                }
             }
+        } catch (IOException e) {
+            // could happen with a token that is not ours
+            logger.debug("invalid token", e);
+            listener.onResponse(null);
         }
     }
 
@@ -503,19 +458,13 @@ public final class TokenService {
         } else {
             maybeStartTokenRemover();
             final Iterator<TimeValue> backoff = DEFAULT_BACKOFF.iterator();
-            try {
-                decodeToken(tokenString, ActionListener.wrap(userToken -> {
-                    if (userToken == null) {
-                        listener.onFailure(traceLog("invalidate token", tokenString, malformedTokenException()));
-                    } else {
-                        indexInvalidation(Collections.singleton(userToken.getId()), listener, backoff,
-                            "access_token", null);
-                    }
-                }, listener::onFailure));
-            } catch (IOException e) {
-                logger.error("received a malformed token as part of a invalidation request", e);
-                listener.onFailure(malformedTokenException());
-            }
+            decodeToken(tokenString, ActionListener.wrap(userToken -> {
+                if (userToken == null) {
+                    listener.onFailure(traceLog("invalidate token", tokenString, malformedTokenException()));
+                } else {
+                    indexInvalidation(Collections.singleton(userToken.getId()), listener, backoff, "access_token", null);
+                }
+            }, listener::onFailure));
         }
     }
 
@@ -816,16 +765,24 @@ public final class TokenService {
                     "access token and refresh token", tokenDocId, supersedingTokenDocId);
                 final ActionListener<GetResponse> getSupersedingListener = new ActionListener<GetResponse>() {
                     @Override
-                    public void onResponse(GetResponse response) {
-                        if (response.isExists()) {
+                    public void onResponse(GetResponse getResponse) {
+                        if (getResponse.isExists()) {
                             logger.debug("Found superseding token document [{}] ", supersedingTokenDocId);
-                            final Map<String, Object> supersedingTokenSource = response.getSource();
+                            final Map<String, Object> supersedingTokenSource = getResponse.getSource();
                             final Map<String, Object> supersedingUserTokenSource = (Map<String, Object>)
                                 ((Map<String, Object>) supersedingTokenSource.get("access_token")).get("user_token");
-                            final Map<String, Object> supersedingRefreshTokenSrc =
+                            final Map<String, Object> supersedingRefreshTokenSource =
                                 (Map<String, Object>) supersedingTokenSource.get("refresh_token");
-                            final String supersedingRefreshTokenValue = (String) supersedingRefreshTokenSrc.get("token");
-                            reIssueTokens(supersedingUserTokenSource, supersedingRefreshTokenValue, listener);
+                            final String supersedingRefreshTokenString = (String) supersedingRefreshTokenSource.get("token");
+                            final UserToken userToken;
+                            try {
+                                userToken = UserToken.fromSourceMap(supersedingUserTokenSource);
+                            } catch (IOException e) {
+                                logger.error("Unable to decode existing user token", e);
+                                listener.onFailure(invalidGrantException("could not refresh the requested token"));
+                                return;
+                            }
+                            listener.onResponse(new Tuple<>(userToken, supersedingRefreshTokenString));
                         } else if (backoff.hasNext()) {
                             // We retry this since the creation of the superseding token document might already be in flight but not
                             // yet completed, triggered by a refresh request that came a few milliseconds ago
@@ -893,7 +850,7 @@ public final class TokenService {
                         updateResponse -> {
                             if (updateResponse.getResult() == DocWriteResponse.Result.UPDATED) {
                                 logger.debug("updated the original token document to {}", updateResponse.getGetResult().sourceAsMap());
-                                createUserToken(newUserTokenId, authentication, clientAuth, listener, metadata, true);
+                                createUserToken(newUserTokenId, authentication, clientAuth, metadata, true, listener);
                             } else if (backoff.hasNext()) {
                                 logger.info("failed to update the original token document [{}], the update result was [{}]. Retrying",
                                     tokenDocId, updateResponse.getResult());
@@ -1463,6 +1420,34 @@ public final class TokenService {
             new ElasticsearchSecurityException("invalid_grant", RestStatus.BAD_REQUEST);
         e.addHeader("error_description", detail);
         return e;
+    }
+
+    private static BytesReference createTokenDocument(Instant created, Instant expiration, String refreshToken,
+            Authentication originatingClientAuth, UserToken userToken, Authentication authentication) throws IOException {
+        try (XContentBuilder builder = XContentFactory.jsonBuilder()) {
+            builder.startObject();
+            builder.field("doc_type", TOKEN_DOC_TYPE);
+            builder.field("creation_time", created.toEpochMilli());
+            if (refreshToken != null) {
+                builder.startObject("refresh_token")
+                    .field("token", refreshToken)
+                    .field("invalidated", false)
+                    .field("refreshed", false)
+                    .startObject("client")
+                        .field("type", "unassociated_client")
+                        .field("user", originatingClientAuth.getUser().principal())
+                        .field("realm", originatingClientAuth.getAuthenticatedBy().getName())
+                    .endObject()
+                    .endObject();
+            }
+            builder.startObject("access_token")
+                    .field("invalidated", false)
+                    .field("user_token", userToken)
+                    .field("realm", authentication.getAuthenticatedBy().getName())
+                    .endObject();
+            builder.endObject();
+            return BytesReference.bytes(builder);
+        }
     }
 
     /**
