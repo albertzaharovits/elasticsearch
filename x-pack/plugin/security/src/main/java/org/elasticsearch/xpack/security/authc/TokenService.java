@@ -186,6 +186,7 @@ public final class TokenService {
     private final TimeValue deleteInterval;
     private final Client client;
     private final SecurityIndexManager securityIndex;
+    private final SecurityIndexManager securityTokensIndex;
     private final ExpiredTokenRemover expiredTokenRemover;
     private final boolean enabled;
     private volatile TokenKeys keyCache;
@@ -218,6 +219,11 @@ public final class TokenService {
                 new BytesKey(saltArr));
         keyCache = new TokenKeys(Collections.singletonMap(keyAndCache.getKeyHash(), keyAndCache), keyAndCache.getKeyHash());
         this.clusterService = clusterService;
+        if (enabled) {
+            this.securityTokensIndex = new SecurityIndexManager(client, SecurityIndexManager.SECURITY_INDEX_NAME, clusterService);
+        } else {
+            this.securityTokensIndex = null;
+        }
         initialize(clusterService);
         getTokenMetaData();
     }

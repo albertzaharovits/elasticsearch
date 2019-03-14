@@ -84,21 +84,21 @@ public class SecurityIndexManager implements ClusterStateListener {
     public static final String SECURITY_INDEX_NAME = ".security";
     private static final Logger LOGGER = LogManager.getLogger(SecurityIndexManager.class);
 
-    private final String indexName;
+    private final String aliasName;
     private final Client client;
 
     private final List<BiConsumer<State, State>> stateChangeListeners = new CopyOnWriteArrayList<>();
 
     private volatile State indexState;
 
-    public SecurityIndexManager(Client client, String indexName, ClusterService clusterService) {
-        this(client, indexName, State.UNRECOVERED_STATE);
+    public SecurityIndexManager(Client client, String aliasName, ClusterService clusterService) {
+        this(client, aliasName, State.UNRECOVERED_STATE);
         clusterService.addListener(this);
     }
 
-    private SecurityIndexManager(Client client, String indexName, State indexState) {
+    private SecurityIndexManager(Client client, String aliasName, State indexState) {
         this.client = client;
-        this.indexName = indexName;
+        this.aliasName = aliasName;
         this.indexState = indexState;
     }
 
