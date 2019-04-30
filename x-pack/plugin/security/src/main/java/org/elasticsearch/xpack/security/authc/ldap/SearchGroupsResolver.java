@@ -70,7 +70,7 @@ class SearchGroupsResolver implements GroupsResolver {
                                     (results) -> listener.onResponse(results
                                             .stream()
                                             .map((r) -> r.getDN())
-                                            .collect(Collectors.toList())
+                                            .collect(Collectors.toUnmodifiableList())
                                     ),
                                     listener::onFailure),
                             SearchRequest.NO_ATTRIBUTES);

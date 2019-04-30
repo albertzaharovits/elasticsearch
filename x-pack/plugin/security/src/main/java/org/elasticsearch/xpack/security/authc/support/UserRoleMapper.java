@@ -84,7 +84,6 @@ public interface UserRoleMapper {
                 model.defineField("dn", dn, new DistinguishedNamePredicate(dn));
             }
             model.defineField("groups", groups, groups.stream()
-                    .filter(group -> group != null)
                     .<Predicate<FieldExpression.FieldValue>>map(DistinguishedNamePredicate::new)
                     .reduce(Predicate::or)
                     .orElse(fieldValue -> false)

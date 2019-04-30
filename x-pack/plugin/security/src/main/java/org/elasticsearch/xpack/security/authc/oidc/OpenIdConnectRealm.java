@@ -60,7 +60,6 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
-
 import static org.elasticsearch.xpack.core.security.authc.oidc.OpenIdConnectRealmSettings.DN_CLAIM;
 import static org.elasticsearch.xpack.core.security.authc.oidc.OpenIdConnectRealmSettings.GROUPS_CLAIM;
 import static org.elasticsearch.xpack.core.security.authc.oidc.OpenIdConnectRealmSettings.MAIL_CLAIM;
@@ -438,7 +437,7 @@ public class OpenIdConnectRealm extends Realm implements Releasable {
                                     return null;
                                 }
                                 return value;
-                            }).filter(Objects::nonNull).collect(Collectors.toList());
+                            }).filter(Objects::nonNull).collect(Collectors.toUnmodifiableList());
                         });
                 } else {
                     return new ClaimParser(
@@ -454,7 +453,8 @@ public class OpenIdConnectRealm extends Realm implements Releasable {
                                     + " expects a claim with String or a String Array value but found a "
                                     + claimValueObject.getClass().getName());
                             }
-                            return (List<String>) claimValueObject;
+                            return ((List<String>) claimValueObject).stream().filter(Objects::nonNull)
+                                    .collect(Collectors.toUnmodifiableList());
                         });
                 }
             } else if (required) {

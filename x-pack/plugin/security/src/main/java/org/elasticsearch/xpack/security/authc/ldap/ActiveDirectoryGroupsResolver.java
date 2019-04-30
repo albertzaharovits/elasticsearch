@@ -59,10 +59,9 @@ class ActiveDirectoryGroupsResolver implements GroupsResolver {
                         search(connection, baseDn, scope.scope(), filter,
                                 Math.toIntExact(timeout.seconds()), ignoreReferralErrors,
                                 ActionListener.wrap((results) -> {
-                                            List<String> groups = results.stream()
+                                            listener.onResponse(results.stream()
                                                     .map(SearchResultEntry::getDN)
-                                                    .collect(Collectors.toList());
-                                            listener.onResponse(Collections.unmodifiableList(groups));
+                                                    .collect(Collectors.toUnmodifiableList()));
                                         },
                                         listener::onFailure),
                                 SearchRequest.NO_ATTRIBUTES);

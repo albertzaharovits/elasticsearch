@@ -48,15 +48,15 @@ class UserAttributeGroupsResolver implements GroupsResolver {
                         ActionListener<List<String>> listener) {
         if (attributes != null) {
             List<String> list = attributes.stream().filter((attr) -> attr.getName().equals(attribute))
-                    .flatMap(attr -> Arrays.stream(attr.getValues())).collect(Collectors.toList());
-            listener.onResponse(Collections.unmodifiableList(list));
+                    .flatMap(attr -> Arrays.stream(attr.getValues())).collect(Collectors.toUnmodifiableList());
+            listener.onResponse(list);
         } else {
             searchForEntry(connection, userDn, SearchScope.BASE, OBJECT_CLASS_PRESENCE_FILTER, Math.toIntExact(timeout.seconds()),
                     ignoreReferralErrors, ActionListener.wrap((entry) -> {
                         if (entry == null || entry.hasAttribute(attribute) == false) {
                             listener.onResponse(Collections.emptyList());
                         } else {
-                            listener.onResponse(Collections.unmodifiableList(Arrays.asList(entry.getAttributeValues(attribute))));
+                            listener.onResponse(List.of(entry.getAttributeValues(attribute)));
                         }
                     }, listener::onFailure), attribute);
         }
@@ -66,6 +66,5 @@ class UserAttributeGroupsResolver implements GroupsResolver {
     public String[] attributes() {
         return new String[] { attribute };
     }
-
 
 }

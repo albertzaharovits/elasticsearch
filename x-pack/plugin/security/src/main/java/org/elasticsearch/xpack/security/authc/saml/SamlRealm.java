@@ -764,7 +764,7 @@ public final class SamlRealm extends Realm implements Releasable {
                                     return null;
                                 }
                                 return value;
-                            }).filter(Objects::nonNull).collect(Collectors.toList())
+                            }).filter(Objects::nonNull).collect(Collectors.toUnmodifiableList())
                     );
                 } else {
                     return new AttributeParser(
