@@ -15,8 +15,8 @@ import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.xpack.core.security.authc.RealmConfig;
 
 import java.util.Collection;
-import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Represents a LDAP connection with an authenticated/bound user that needs closing.
@@ -86,9 +86,9 @@ public class LdapSession implements Releasable {
     }
 
     /**
-     * Asynchronously retrieves a list of group distinguished names
+     * Asynchronously retrieves a set of group distinguished names
      */
-    public void groups(ActionListener<List<String>> listener) {
+    public void groups(ActionListener<Set<String>> listener) {
         groupsResolver.resolve(connection, userDn, timeout, logger, attributes, listener);
     }
 
@@ -112,10 +112,10 @@ public class LdapSession implements Releasable {
     }
 
     public static class LdapUserData {
-        public final List<String> groups;
+        public final Set<String> groups;
         public final Map<String, Object> metaData;
 
-        public LdapUserData(List<String> groups, Map<String, Object> metaData) {
+        public LdapUserData(Set<String> groups, Map<String, Object> metaData) {
             this.groups = groups;
             this.metaData = metaData;
         }
@@ -137,7 +137,7 @@ public class LdapSession implements Releasable {
          * @param listener the listener to call on a result or on failure
          */
         void resolve(LDAPInterface ldapConnection, String userDn, TimeValue timeout, Logger logger, Collection<Attribute> attributes,
-                     ActionListener<List<String>> listener);
+                     ActionListener<Set<String>> listener);
 
         /**
          * Returns the attributes that this resolvers uses. If no attributes are required, return {@code null}.

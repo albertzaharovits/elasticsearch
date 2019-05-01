@@ -48,7 +48,7 @@ import org.elasticsearch.xpack.security.authc.support.UserRoleMapper;
 
 import java.net.URI;
 import java.net.URISyntaxException;
-
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -216,7 +216,7 @@ public class OpenIdConnectRealm extends Realm implements Releasable {
                 userMetadata.put("oidc(" + entry.getKey() + ")", entry.getValue());
             }
         }
-        final List<String> groups = groupsAttribute.getClaimValues(claims);
+        final Set<String> groups = groupsAttribute.getClaimValues(claims);
         final String dn = dnAttribute.getClaimValue(claims);
         final String mail = mailAttribute.getClaimValue(claims);
         final String name = nameAttribute.getClaimValue(claims);
@@ -374,23 +374,23 @@ public class OpenIdConnectRealm extends Realm implements Releasable {
 
     static final class ClaimParser {
         private final String name;
-        private final Function<JWTClaimsSet, List<String>> parser;
+        private final Function<JWTClaimsSet, Set<String>> parser;
 
-        ClaimParser(String name, Function<JWTClaimsSet, List<String>> parser) {
+        ClaimParser(String name, Function<JWTClaimsSet, Set<String>> parser) {
             this.name = name;
             this.parser = parser;
         }
 
-        List<String> getClaimValues(JWTClaimsSet claims) {
+        Set<String> getClaimValues(JWTClaimsSet claims) {
             return parser.apply(claims);
         }
 
         String getClaimValue(JWTClaimsSet claims) {
-            List<String> claimValues = parser.apply(claims);
+            Set<String> claimValues = parser.apply(claims);
             if (claimValues == null || claimValues.isEmpty()) {
                 return null;
             } else {
-                return claimValues.get(0);
+                return claimValues.iterator().next();
             }
         }
 
@@ -411,16 +411,16 @@ public class OpenIdConnectRealm extends Realm implements Releasable {
                             + setting.name(realmConfig) + "]",
                         claims -> {
                             Object claimValueObject = claims.getClaim(claimName);
-                            List<String> values;
+                            Collection<String> values;
                             if (claimValueObject == null) {
                                 values = Collections.emptyList();
                             } else if (claimValueObject instanceof String) {
                                 values = Collections.singletonList((String) claimValueObject);
-                            } else if (claimValueObject instanceof List) {
-                                values = (List<String>) claimValueObject;
+                            } else if (claimValueObject instanceof Collection) {
+                                values = (Collection<String>) claimValueObject;
                             } else {
                                 throw new SettingsException("Setting [" + RealmSettings.getFullSettingKey(realmConfig, setting.getClaim())
-                                    + " expects a claim with String or a String Array value but found a "
+                                    + " expects a claim with String or a String Collection value but found a "
                                     + claimValueObject.getClass().getName());
                             }
                             return values.stream().map(s -> {
@@ -437,7 +437,7 @@ public class OpenIdConnectRealm extends Realm implements Releasable {
                                     return null;
                                 }
                                 return value;
-                            }).filter(Objects::nonNull).collect(Collectors.toUnmodifiableList());
+                            }).filter(Objects::nonNull).collect(Collectors.toUnmodifiableSet());
                         });
                 } else {
                     return new ClaimParser(
@@ -445,16 +445,16 @@ public class OpenIdConnectRealm extends Realm implements Releasable {
                         claims -> {
                             Object claimValueObject = claims.getClaim(claimName);
                             if (claimValueObject == null) {
-                                return Collections.emptyList();
+                                return Set.of();
                             } else if (claimValueObject instanceof String) {
-                                return Collections.singletonList((String) claimValueObject);
-                            } else if (claimValueObject instanceof List == false) {
+                                return Set.of((String) claimValueObject);
+                            } else if (claimValueObject instanceof Collection == false) {
                                 throw new SettingsException("Setting [" + RealmSettings.getFullSettingKey(realmConfig, setting.getClaim())
-                                    + " expects a claim with String or a String Array value but found a "
+                                    + " expects a claim with String or a String Collection value but found a "
                                     + claimValueObject.getClass().getName());
                             }
-                            return ((List<String>) claimValueObject).stream().filter(Objects::nonNull)
-                                    .collect(Collectors.toUnmodifiableList());
+                            return ((Collection<String>) claimValueObject).stream().filter(Objects::nonNull)
+                                    .collect(Collectors.toUnmodifiableSet());
                         });
                 }
             } else if (required) {
@@ -466,7 +466,7 @@ public class OpenIdConnectRealm extends Realm implements Releasable {
                     + "] is also set");
             } else {
                 return new ClaimParser("No OpenID Connect Claim for [" + setting.name(realmConfig) + "]",
-                    attributes -> Collections.emptyList());
+                    attributes -> Set.of());
             }
         }
     }

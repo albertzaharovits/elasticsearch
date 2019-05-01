@@ -59,13 +59,12 @@ public interface UserRoleMapper {
         private final Map<String, Object> metadata;
         private final RealmConfig realm;
 
-        public UserData(String username, @Nullable String dn, Collection<String> groups,
-                        Map<String, Object> metadata, RealmConfig realm) {
+        public UserData(String username, @Nullable String dn, Set<String> groups, Map<String, Object> metadata, RealmConfig realm) {
+            assert groups != null;
+            assert false == (new HashSet<>(groups).contains(null));
             this.username = username;
             this.dn = dn;
-            // noinspection Java9CollectionFactory (because null values happen in some tests, is this realistic?)
-            this.groups = groups == null || groups.isEmpty()
-                    ? Collections.emptySet() : Collections.unmodifiableSet(new HashSet<>(groups));
+            this.groups = groups;
             // noinspection Java9CollectionFactory (because null values happen in production code, can such keys be dropped?)
             this.metadata = metadata == null || metadata.isEmpty()
                     ? Collections.emptyMap() : Collections.unmodifiableMap(new HashMap<>(metadata));
