@@ -176,7 +176,6 @@ public class XPackSettings {
     public static final List<String> DEFAULT_SUPPORTED_PROTOCOLS = List.of("TLSv1.3", "TLSv1.2", "TLSv1.1");
 
     public static final SSLClientAuth CLIENT_AUTH_DEFAULT = SSLClientAuth.REQUIRED;
-    public static final SSLClientAuth HTTP_CLIENT_AUTH_DEFAULT = SSLClientAuth.NONE;
     public static final VerificationMode VERIFICATION_MODE_DEFAULT = VerificationMode.FULL;
 
     // http specific settings

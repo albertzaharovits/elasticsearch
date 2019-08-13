@@ -6,6 +6,7 @@
 package org.elasticsearch.xpack.core.ssl;
 
 import org.elasticsearch.common.Nullable;
+import org.elasticsearch.common.logging.DeprecationLogger;
 import org.elasticsearch.common.settings.SecureString;
 import org.elasticsearch.common.settings.Setting;
 import org.elasticsearch.common.settings.Settings;
@@ -18,6 +19,8 @@ import java.nio.file.Path;
 import java.security.GeneralSecurityException;
 import java.util.ArrayList;
 import java.util.List;
+
+import javax.net.ssl.SSLEngine;
 
 import static org.elasticsearch.xpack.core.ssl.SSLConfigurationSettings.getKeyStoreType;
 
@@ -106,6 +109,27 @@ public final class SSLConfiguration {
         List<Path> paths = new ArrayList<>(keyConfig().filesToMonitor(environment));
         paths.addAll(trustConfig().filesToMonitor(environment));
         return paths;
+    }
+
+    /**
+     * Call only if this instance of {@code SSLConfiguration} is to be used exclusively for an {@code SSLEngine} in server mode.
+     * This will log deprecation warnings if client_authentication and verification_mode are inconsistent.
+     */
+    void attestExclusiveServerMode(String namespacePrefix, DeprecationLogger deprecationLogger) {
+        if (this.verificationMode == VerificationMode.NONE) {
+            if (this.sslClientAuth.enabled()) {
+                deprecationLogger.deprecated("Client authentication [" + namespacePrefix + SETTINGS_PARSER.clientAuth.getKey()
+                        + "] does not work correctly when verification mode [" + namespacePrefix + SETTINGS_PARSER.verificationMode.getKey()
+                        + "] is [" + VerificationMode.NONE + "]. Instead, disable client authentication or enable verification mode.");
+            }
+        } else {
+            if (false == this.sslClientAuth.enabled()) {
+                deprecationLogger.deprecated("Verification mode [" + namespacePrefix + SETTINGS_PARSER.verificationMode.getKey()
+                        + "] does not work correctly when client authentication [" + namespacePrefix
+                        + SETTINGS_PARSER.clientAuth.getKey()
+                        + "] is disabled. Instead, enable verification mode or disable client authentication.");
+            }
+        }
     }
 
     @Override

@@ -14,6 +14,7 @@ import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.ElasticsearchSecurityException;
 import org.elasticsearch.common.CheckedSupplier;
 import org.elasticsearch.common.Strings;
+import org.elasticsearch.common.logging.DeprecationLogger;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.env.Environment;
 import org.elasticsearch.xpack.core.XPackSettings;
@@ -65,6 +66,7 @@ import java.util.stream.Collectors;
 public class SSLService {
 
     private static final Logger logger = LogManager.getLogger(SSLService.class);
+    private static final DeprecationLogger deprecationLogger = new DeprecationLogger(logger);
     /**
      * An ordered map of protocol algorithms to SSLContext algorithms. The map is ordered from most
      * secure to least secure. The names in this map are taken from the
@@ -430,27 +432,24 @@ public class SSLService {
     }
 
     private SSLConfiguration loadConfiguration(String key, Settings settings, Map<SSLConfiguration, SSLContextHolder> contextHolders) {
-        if (key.endsWith(".")) {
-            // Drop trailing '.' so that any exception messages are consistent
-            key = key.substring(0, key.length() - 1);
-        }
         try {
             final SSLConfiguration configuration = new SSLConfiguration(settings);
-            storeSslConfiguration(key, configuration);
+            // unlike the transport SSL configuration, the HTTP SSL configuration is always used in server mode, therefore we can do extra
+            // setting validations (around client authentication and verification mode)
+            if (XPackSettings.HTTP_SSL_PREFIX.equals(key)) {
+                configuration.attestExclusiveServerMode(key, deprecationLogger);
+            }
+            // Drop trailing '.' so that any exception messages are consistent
+            if (key.endsWith(".")) {
+                key = key.substring(0, key.length() - 1);
+            }
+            sslConfigurations.put(key, configuration);
             contextHolders.computeIfAbsent(configuration, this::createSslContext);
             return configuration;
         } catch (Exception e) {
             throw new ElasticsearchSecurityException("failed to load SSL configuration [{}]", e, key);
         }
     }
-
-    private void storeSslConfiguration(String key, SSLConfiguration configuration) {
-        if (key.endsWith(".")) {
-            key = key.substring(0, key.length() - 1);
-        }
-        sslConfigurations.put(key, configuration);
-    }
-
 
     /**
      * Returns information about each certificate that is referenced by any SSL configuration.
@@ -681,8 +680,20 @@ public class SSLService {
         }
 
         Settings.Builder builder = Settings.builder().put(httpSSLSettings);
-        if (builder.get("client_authentication") == null) {
-            builder.put("client_authentication", XPackSettings.HTTP_CLIENT_AUTH_DEFAULT);
+        if (builder.get("client_authentication") == null && builder.get("verification_mode") == null) {
+            // by default, Security HTTPS does not validate the client
+            builder.put("client_authentication", SSLClientAuth.NONE);
+            builder.put("verification_mode", VerificationMode.NONE);
+        } else if (builder.get("client_authentication") == null) {
+            // otherwise it defaults to 'required' which is incompatible with `verification_mode` 'none`
+            if (VerificationMode.NONE.name().equals(builder.get("verification_mode"))) {
+                builder.put("client_authentication", SSLClientAuth.NONE);
+            }
+        } else if (builder.get("verification_mode") == null) {
+            // otherwise it defaults to `full` which is incompatible with `client_authentication` `none`
+            if (SSLClientAuth.NONE.name().equals(builder.get("client_authentication"))) {
+                builder.put("verification_mode", VerificationMode.NONE);
+            }
         }
         return builder.build();
     }

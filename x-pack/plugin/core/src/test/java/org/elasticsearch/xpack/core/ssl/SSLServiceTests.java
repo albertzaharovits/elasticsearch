@@ -302,18 +302,84 @@ public class SSLServiceTests extends ESTestCase {
         assertTrue(sslService.isSSLClientAuthEnabled(sslService.getSSLConfiguration("transport.profiles.foo.xpack.security.ssl")));
     }
 
-    public void testThatHttpClientAuthDefaultsToNone() throws Exception {
-        final Settings globalSettings = Settings.builder()
-            .put("xpack.security.http.ssl.enabled", true)
-            .put("xpack.security.transport.ssl.client_authentication", SSLClientAuth.OPTIONAL.name())
-            .build();
-        final SSLService sslService = new SSLService(globalSettings, env);
+    public void testSecurityHttpDefaults() throws Exception {
+        {
+            SSLClientAuth clientAuth = randomFrom(SSLClientAuth.REQUIRED, SSLClientAuth.OPTIONAL);
+            Settings globalSettings = Settings.builder()
+                    .put("xpack.security.http.ssl.enabled", true)
+                    .put("xpack.security.http.ssl.client_authentication", clientAuth.name())
+                    .build();
+            SSLService sslService = new SSLService(globalSettings, env);
+            SSLConfiguration httpConfig = sslService.getHttpTransportSSLConfiguration();
+            assertThat(httpConfig.sslClientAuth(), is(clientAuth));
+            assertThat(httpConfig.verificationMode(), is(VerificationMode.FULL));
+        }
+        {
+            Settings.Builder globalSettingsBuilder = Settings.builder()
+                    .put("xpack.security.http.ssl.enabled", true);
+            if (randomBoolean()) {
+                globalSettingsBuilder.put("xpack.security.http.ssl.client_authentication", SSLClientAuth.NONE);
+            }
+            SSLService sslService = new SSLService(globalSettingsBuilder.build(), env);
+            SSLConfiguration httpConfig = sslService.getHttpTransportSSLConfiguration();
+            assertThat(httpConfig.sslClientAuth(), is(SSLClientAuth.NONE));
+            assertThat(httpConfig.verificationMode(), is(VerificationMode.NONE));
+        }
+        {
+            VerificationMode verificationMode = randomFrom(VerificationMode.CERTIFICATE, VerificationMode.FULL);
+            Settings globalSettings = Settings.builder()
+                    .put("xpack.security.http.ssl.enabled", true)
+                    .put("xpack.security.http.ssl.verification_mode", verificationMode.name())
+                    .build();
+            SSLService sslService = new SSLService(globalSettings, env);
+            SSLConfiguration httpConfig = sslService.getHttpTransportSSLConfiguration();
+            assertThat(httpConfig.sslClientAuth(), is(SSLClientAuth.REQUIRED));
+            assertThat(httpConfig.verificationMode(), is(verificationMode));
+        }
+        {
+            Settings.Builder globalSettingsBuilder = Settings.builder()
+                    .put("xpack.security.http.ssl.enabled", true);
+            if (randomBoolean()) {
+                globalSettingsBuilder.put("xpack.security.http.ssl.verification_mode", VerificationMode.NONE);
+            }
+            SSLService sslService = new SSLService(globalSettingsBuilder.build(), env);
+            SSLConfiguration httpConfig = sslService.getHttpTransportSSLConfiguration();
+            assertThat(httpConfig.sslClientAuth(), is(SSLClientAuth.NONE));
+            assertThat(httpConfig.verificationMode(), is(VerificationMode.NONE));
+        }
+    }
 
-        final SSLConfiguration globalConfig = sslService.getSSLConfiguration("xpack.security.transport.ssl");
-        assertThat(globalConfig.sslClientAuth(), is(SSLClientAuth.OPTIONAL));
-
-        final SSLConfiguration httpConfig = sslService.getHttpTransportSSLConfiguration();
-        assertThat(httpConfig.sslClientAuth(), is(SSLClientAuth.NONE));
+    public void testSecurityHttpDeprecations() throws Exception {
+        {
+            SSLClientAuth clientAuth = randomFrom(SSLClientAuth.REQUIRED, SSLClientAuth.OPTIONAL);
+            Settings globalSettings = Settings.builder()
+                    .put("xpack.security.http.ssl.enabled", true)
+                    .put("xpack.security.http.ssl.client_authentication", clientAuth.name())
+                    .put("xpack.security.http.ssl.verification_mode", VerificationMode.NONE)
+                    .build();
+            SSLService sslService = new SSLService(globalSettings, env);
+            SSLConfiguration httpConfig = sslService.getHttpTransportSSLConfiguration();
+            assertThat(httpConfig.sslClientAuth(), is(clientAuth));
+            assertThat(httpConfig.verificationMode(), is(VerificationMode.NONE));
+            assertWarnings("Client authentication [xpack.security.http.ssl.client_authentication] does not work correctly "
+                    + "when verification mode [xpack.security.http.ssl.verification_mode] is [NONE]. "
+                    + "Instead, disable client authentication or enable verification mode.");
+        }
+        {
+            VerificationMode verificationMode = randomFrom(VerificationMode.CERTIFICATE, VerificationMode.FULL);
+            Settings globalSettings = Settings.builder()
+                    .put("xpack.security.http.ssl.enabled", true)
+                    .put("xpack.security.http.ssl.client_authentication", SSLClientAuth.NONE)
+                    .put("xpack.security.http.ssl.verification_mode", verificationMode)
+                    .build();
+            SSLService sslService = new SSLService(globalSettings, env);
+            SSLConfiguration httpConfig = sslService.getHttpTransportSSLConfiguration();
+            assertThat(httpConfig.sslClientAuth(), is(SSLClientAuth.NONE));
+            assertThat(httpConfig.verificationMode(), is(verificationMode));
+            assertWarnings("Verification mode [xpack.security.http.ssl.verification_mode] does not work correctly "
+                    + "when client authentication [xpack.security.http.ssl.client_authentication] is disabled. "
+                    + "Instead, enable verification mode or disable client authentication.");
+        }
     }
 
     public void testThatTruststorePasswordIsRequired() throws Exception {
