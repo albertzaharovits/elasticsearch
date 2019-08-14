@@ -434,16 +434,17 @@ public class SSLService {
     }
 
     private SSLConfiguration loadConfiguration(String key, Settings settings, Map<SSLConfiguration, SSLContextHolder> contextHolders) {
+        boolean onlyServerMode = XPackSettings.HTTP_SSL_PREFIX.equals(key);
+        if (key.endsWith(".")) {
+            // Drop trailing '.' so that any exception messages are consistent
+            key = key.substring(0, key.length() - 1);
+        }
         try {
             final SSLConfiguration configuration = new SSLConfiguration(settings);
             // unlike the transport SSL configuration, the HTTP SSL configuration is always used in server mode, therefore we can do extra
             // setting validations (around client authentication and verification mode)
-            if (XPackSettings.HTTP_SSL_PREFIX.equals(key)) {
+            if (onlyServerMode) {
                 configuration.attestExclusiveServerMode(key, deprecationLogger);
-            }
-            // Drop trailing '.' so that any exception messages are consistent
-            if (key.endsWith(".")) {
-                key = key.substring(0, key.length() - 1);
             }
             sslConfigurations.put(key, configuration);
             contextHolders.computeIfAbsent(configuration, this::createSslContext);
