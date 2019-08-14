@@ -688,12 +688,12 @@ public class SSLService {
             builder.put("verification_mode", VerificationMode.NONE);
         } else if (builder.get("client_authentication") == null) {
             // otherwise it defaults to 'required' which is incompatible with `verification_mode` 'none`
-            if (VerificationMode.NONE.name().equals(builder.get("verification_mode"))) {
+            if (VerificationMode.parse(builder.get("verification_mode")).equals(VerificationMode.NONE)) {
                 builder.put("client_authentication", SSLClientAuth.NONE);
             }
         } else if (builder.get("verification_mode") == null) {
             // otherwise it defaults to `full` which is incompatible with `client_authentication` `none`
-            if (SSLClientAuth.NONE.name().equals(builder.get("client_authentication"))) {
+            if (SSLClientAuth.parse(builder.get("client_authentication")).equals(SSLClientAuth.NONE)) {
                 builder.put("verification_mode", VerificationMode.NONE);
             }
         }

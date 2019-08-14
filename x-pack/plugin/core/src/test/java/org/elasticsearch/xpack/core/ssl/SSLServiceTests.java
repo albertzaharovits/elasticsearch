@@ -378,7 +378,7 @@ public class SSLServiceTests extends ESTestCase {
             assertThat(httpConfig.verificationMode(), is(verificationMode));
             assertWarnings("Verification mode [xpack.security.http.ssl.verification_mode] does not work correctly "
                     + "when client authentication [xpack.security.http.ssl.client_authentication] is disabled. "
-                    + "Instead, enable verification mode or disable client authentication.");
+                    + "Instead, disable verification mode or enable client authentication.");
         }
     }
 

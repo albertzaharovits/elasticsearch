@@ -125,7 +125,7 @@ public final class SSLConfiguration {
                 deprecationLogger.deprecated("Verification mode [" + namespacePrefix + SETTINGS_PARSER.verificationMode.getKey()
                         + "] does not work correctly when client authentication [" + namespacePrefix
                         + SETTINGS_PARSER.clientAuth.getKey()
-                        + "] is disabled. Instead, enable verification mode or disable client authentication.");
+                        + "] is disabled. Instead, disable verification mode or enable client authentication.");
             }
         }
     }
