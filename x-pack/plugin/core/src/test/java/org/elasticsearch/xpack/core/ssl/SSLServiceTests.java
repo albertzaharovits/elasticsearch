@@ -333,7 +333,7 @@ public class SSLServiceTests extends ESTestCase {
                     .build();
             SSLService sslService = new SSLService(globalSettings, env);
             SSLConfiguration httpConfig = sslService.getHttpTransportSSLConfiguration();
-            assertThat(httpConfig.sslClientAuth(), is(SSLClientAuth.REQUIRED));
+            assertThat(httpConfig.sslClientAuth(), is(SSLClientAuth.NONE));
             assertThat(httpConfig.verificationMode(), is(verificationMode));
         }
         {

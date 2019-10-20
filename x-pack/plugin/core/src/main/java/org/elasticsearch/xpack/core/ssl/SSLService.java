@@ -683,20 +683,14 @@ public class SSLService {
         }
 
         Settings.Builder builder = Settings.builder().put(httpSSLSettings);
-        if (builder.get("client_authentication") == null && builder.get("verification_mode") == null) {
-            // by default, Security HTTPS does not validate the client
+        if (builder.get("client_authentication") == null) {
             builder.put("client_authentication", SSLClientAuth.NONE);
+        }
+        if (SSLClientAuth.parse(builder.get("client_authentication")).equals(SSLClientAuth.NONE)
+                && builder.get("verification_mode") == null) {
+            // otherwise it defaults to FULL which triggers deprecation warnings and we don't wish deprecation warnings on default
+            // configurations
             builder.put("verification_mode", VerificationMode.NONE);
-        } else if (builder.get("client_authentication") == null) {
-            // otherwise it defaults to 'required' which is incompatible with `verification_mode` 'none`
-            if (VerificationMode.parse(builder.get("verification_mode")).equals(VerificationMode.NONE)) {
-                builder.put("client_authentication", SSLClientAuth.NONE);
-            }
-        } else if (builder.get("verification_mode") == null) {
-            // otherwise it defaults to `full` which is incompatible with `client_authentication` `none`
-            if (SSLClientAuth.parse(builder.get("client_authentication")).equals(SSLClientAuth.NONE)) {
-                builder.put("verification_mode", VerificationMode.NONE);
-            }
         }
         return builder.build();
     }
