@@ -48,7 +48,6 @@ import org.gradle.api.artifacts.ModuleVersionIdentifier
 import org.gradle.api.artifacts.ProjectDependency
 import org.gradle.api.artifacts.ResolvedArtifact
 import org.gradle.api.artifacts.dsl.RepositoryHandler
-import org.gradle.api.artifacts.repositories.ArtifactRepository
 import org.gradle.api.artifacts.repositories.IvyArtifactRepository
 import org.gradle.api.artifacts.repositories.IvyPatternRepositoryLayout
 import org.gradle.api.artifacts.repositories.MavenArtifactRepository
@@ -85,13 +84,10 @@ import org.gradle.util.GradleVersion
 
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
-import java.time.ZoneOffset
-import java.time.ZonedDateTime
 import java.util.regex.Matcher
 
-import static org.elasticsearch.gradle.tool.Boilerplate.maybeConfigure
 import static org.elasticsearch.gradle.tool.Boilerplate.findByName
-
+import static org.elasticsearch.gradle.tool.Boilerplate.maybeConfigure
 /**
  * Encapsulates build configuration for elasticsearch projects.
  */
@@ -135,7 +131,6 @@ class BuildPlugin implements Plugin<Project> {
 
         project.getTasks().register("buildResources", ExportElasticsearchBuildResourcesTask)
 
-        setupSeed(project)
         configureRepositories(project)
         project.extensions.getByType(ExtraPropertiesExtension).set('versions', VersionProperties.versions)
         configureInputNormalization(project)
@@ -411,11 +406,11 @@ class BuildPlugin implements Plugin<Project> {
         project.getRepositories().all { repository ->
             if (repository instanceof MavenArtifactRepository) {
                 final MavenArtifactRepository maven = (MavenArtifactRepository) repository
-                assertRepositoryURIUsesHttps(maven, project, maven.getUrl())
-                repository.getArtifactUrls().each { uri -> assertRepositoryURIUsesHttps(maven, project, uri) }
+                assertRepositoryURIIsSecure(maven.name, project.path, maven.getUrl())
+                repository.getArtifactUrls().each { uri -> assertRepositoryURIIsSecure(maven.name, project.path, uri) }
             } else if (repository instanceof IvyArtifactRepository) {
                 final IvyArtifactRepository ivy = (IvyArtifactRepository) repository
-                assertRepositoryURIUsesHttps(ivy, project, ivy.getUrl())
+                assertRepositoryURIIsSecure(ivy.name, project.path, ivy.getUrl())
             }
         }
         RepositoryHandler repos = project.repositories
@@ -455,9 +450,15 @@ class BuildPlugin implements Plugin<Project> {
         }
     }
 
-    private static void assertRepositoryURIUsesHttps(final ArtifactRepository repository, final Project project, final URI uri) {
-        if (uri != null && uri.toURL().getProtocol().equals("http")) {
-            throw new GradleException("repository [${repository.name}] on project with path [${project.path}] is using http for artifacts on [${uri.toURL()}]")
+    static void assertRepositoryURIIsSecure(final String repositoryName, final String projectPath, final URI uri) {
+        if (uri != null && ["file", "https", "s3"].contains(uri.getScheme()) == false) {
+            final String message = String.format(
+                    Locale.ROOT,
+                    "repository [%s] on project with path [%s] is not using a secure protocol for artifacts on [%s]",
+                    repositoryName,
+                    projectPath,
+                    uri.toURL())
+            throw new GradleException(message)
         }
     }
 
@@ -800,8 +801,6 @@ class BuildPlugin implements Plugin<Project> {
                 test.addTestOutputListener(listener)
                 test.addTestListener(listener)
 
-                test.doFirst { println test.jvmArgs }
-
                 /*
                  * We use lazy-evaluated strings in order to configure system properties whose value will not be known until
                  * execution time (e.g. cluster port numbers). Adding these via the normal DSL doesn't work as these get treated
@@ -883,10 +882,24 @@ class BuildPlugin implements Plugin<Project> {
                 // TODO: remove this once ctx isn't added to update script params in 7.0
                 test.systemProperty 'es.scripting.update.ctx_in_params', 'false'
 
+                // TODO: remove this once cname is prepended to transport.publish_address by default in 8.0
+                test.systemProperty 'es.transport.cname_in_publish_address', 'true'
+
+                // Set netty system properties to the properties we configure in jvm.options
+                test.systemProperty('io.netty.noUnsafe', 'true')
+                test.systemProperty('io.netty.noKeySetOptimization', 'true')
+                test.systemProperty('io.netty.recycler.maxCapacityPerThread', '0')
+                test.systemProperty('io.netty.allocator.numDirectArenas', '0')
+
                 test.testLogging { TestLoggingContainer logging ->
                     logging.showExceptions = true
                     logging.showCauses = true
                     logging.exceptionFormat = 'full'
+                }
+
+                if (OS.current().equals(OS.WINDOWS) && System.getProperty('tests.timeoutSuite') == null) {
+                    // override the suite timeout to 30 mins for windows, because it has the most inefficient filesystem known to man
+                    test.systemProperty 'tests.timeoutSuite', '1800000!'
                 }
 
                 project.plugins.withType(ShadowPlugin).whenPluginAdded {
@@ -934,32 +947,6 @@ class BuildPlugin implements Plugin<Project> {
                 task.runtimeConfiguration.extendsFrom(project.configurations.getByName(JavaPlugin.RUNTIME_CONFIGURATION_NAME), project.configurations.getByName('bundle'))
             }
         }
-    }
-
-    /**
-     * Pins the test seed at configuration time so it isn't different on every
-     * {@link Test} execution. This is useful if random
-     * decisions in one run of {@linkplain Test} influence the
-     * outcome of subsequent runs. Pinning the seed up front like this makes
-     * the reproduction line from one run be useful on another run.
-     */
-    static String setupSeed(Project project) {
-        ExtraPropertiesExtension ext = project.rootProject.extensions.getByType(ExtraPropertiesExtension)
-        if (ext.has('testSeed')) {
-            /* Skip this if we've already pinned the testSeed. It is important
-             * that this checks the rootProject so that we know we've only ever
-             * initialized one time. */
-            return ext.get('testSeed')
-        }
-
-        String testSeed = System.getProperty('tests.seed')
-        if (testSeed == null) {
-            long seed = new Random(System.currentTimeMillis()).nextLong()
-            testSeed = Long.toUnsignedString(seed, 16).toUpperCase(Locale.ROOT)
-        }
-
-        ext.set('testSeed', testSeed)
-        return testSeed
     }
 
     private static class TestFailureReportingPlugin implements Plugin<Project> {

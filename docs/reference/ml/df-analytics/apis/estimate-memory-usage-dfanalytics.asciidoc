@@ -21,8 +21,7 @@ experimental[]
 ==== {api-prereq-title}
 
 * You must have `monitor_ml` privilege to use this API. For more 
-information, see {stack-ov}/security-privileges.html[Security privileges] and 
-{stack-ov}/built-in-roles.html[Built-in roles].
+information, see <<security-privileges>> and <<built-in-roles>>.
 
 [[ml-estimate-memory-usage-dfanalytics-desc]]
 ==== {api-description-title}
@@ -42,19 +41,19 @@ Serves as an advice on how to set `model_memory_limit` when creating {dfanalytic
 [[ml-estimate-memory-usage-dfanalytics-results]]
 ==== {api-response-body-title}
 
-`expected_memory_usage_with_one_partition`::
+`expected_memory_without_disk`::
   (string) Estimated memory usage under the assumption that the whole {dfanalytics} should happen in memory
   (i.e. without overflowing to disk).
   
-`expected_memory_usage_with_max_partitions`::
+`expected_memory_with_disk`::
   (string) Estimated memory usage under the assumption that overflowing to disk is allowed during {dfanalytics}.
-  `expected_memory_usage_with_max_partitions` is usually smaller than `expected_memory_usage_with_one_partition`
-  as using disk allows to limit the main memory needed to perform {dfanalytics}.
+  `expected_memory_with_disk` is usually smaller than `expected_memory_without_disk` as using disk allows to
+  limit the main memory needed to perform {dfanalytics}.
 
 [[ml-estimate-memory-usage-dfanalytics-example]]
 ==== {api-examples-title}
 
-[source,js]
+[source,console]
 --------------------------------------------------
 POST _ml/data_frame/analytics/_estimate_memory_usage
 {
@@ -68,16 +67,14 @@ POST _ml/data_frame/analytics/_estimate_memory_usage
   }
 }
 --------------------------------------------------
-// CONSOLE
 // TEST[skip:TBD]
 
 The API returns the following results:
 
-[source,js]
+[source,console-result]
 ----
 {
-  "expected_memory_usage_with_one_partition": "128MB",
-  "expected_memory_usage_with_max_partitions": "32MB"
+  "expected_memory_without_disk": "128MB",
+  "expected_memory_with_disk": "32MB"
 }
 ----
-// TESTRESPONSE

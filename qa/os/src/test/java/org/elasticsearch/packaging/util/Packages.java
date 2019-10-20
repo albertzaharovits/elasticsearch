@@ -19,6 +19,8 @@
 
 package org.elasticsearch.packaging.util;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.elasticsearch.packaging.util.Shell.Result;
 
 import java.io.IOException;
@@ -38,7 +40,6 @@ import static org.elasticsearch.packaging.util.FileMatcher.p660;
 import static org.elasticsearch.packaging.util.FileMatcher.p750;
 import static org.elasticsearch.packaging.util.FileMatcher.p755;
 import static org.elasticsearch.packaging.util.FileUtils.getCurrentVersion;
-import static org.elasticsearch.packaging.util.FileUtils.getDistributionFile;
 import static org.elasticsearch.packaging.util.Platforms.isSysVInit;
 import static org.elasticsearch.packaging.util.Platforms.isSystemd;
 import static org.elasticsearch.packaging.util.ServerUtils.waitForElasticsearch;
@@ -50,6 +51,8 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class Packages {
+
+    protected static final Logger logger =  LogManager.getLogger(Packages.class);
 
     public static final Path SYSVINIT_SCRIPT = Paths.get("/etc/init.d/elasticsearch");
     public static final Path SYSTEMD_SERVICE = Paths.get("/usr/lib/systemd/system/elasticsearch.service");
@@ -81,6 +84,7 @@ public class Packages {
         final Shell sh = new Shell();
         final Result result;
 
+        logger.info("Package type: " + distribution.packaging);
         if (distribution.packaging == Distribution.Packaging.RPM) {
             result = sh.runIgnoreExitCode("rpm -qe " + distribution.flavor.name);
         } else {
@@ -90,19 +94,15 @@ public class Packages {
         return result;
     }
 
-    public static Installation install(Distribution distribution) throws IOException {
-        return install(distribution, getCurrentVersion());
-    }
-
-    public static Installation install(Distribution distribution, String version) throws IOException {
+    public static Installation installPackage(Distribution distribution) throws IOException {
         Shell sh = new Shell();
         String systemJavaHome = sh.run("echo $SYSTEM_JAVA_HOME").stdout.trim();
         if (distribution.hasJdk == false) {
             sh.getEnv().put("JAVA_HOME", systemJavaHome);
         }
-        final Result result = runInstallCommand(distribution, version, sh);
+        final Result result = runInstallCommand(distribution, sh);
         if (result.exitCode != 0) {
-            throw new RuntimeException("Installing distribution " + distribution + " version " + version + " failed: " + result);
+            throw new RuntimeException("Installing distribution " + distribution + " failed: " + result);
         }
 
         Installation installation = Installation.ofPackage(distribution.packaging);
@@ -114,8 +114,8 @@ public class Packages {
         return installation;
     }
 
-    public static Result runInstallCommand(Distribution distribution, String version, Shell sh) {
-        final Path distributionFile = getDistributionFile(distribution, version);
+    public static Result runInstallCommand(Distribution distribution, Shell sh) {
+        final Path distributionFile = distribution.path;
 
         if (Platforms.isRPM()) {
             return sh.runIgnoreExitCode("rpm -i " + distributionFile);
@@ -267,7 +267,7 @@ public class Packages {
         ).forEach(configFile -> assertThat(es.config(configFile), file(File, "root", "elasticsearch", p660)));
     }
 
-    public static void startElasticsearch(Shell sh) throws IOException {
+    public static void startElasticsearch(Shell sh, Installation installation) throws IOException {
         if (isSystemd()) {
             sh.run("systemctl daemon-reload");
             sh.run("systemctl enable elasticsearch.service");
@@ -277,11 +277,11 @@ public class Packages {
             sh.run("service elasticsearch start");
         }
 
-        assertElasticsearchStarted(sh);
+        assertElasticsearchStarted(sh, installation);
     }
 
-    public static void assertElasticsearchStarted(Shell sh) throws IOException {
-        waitForElasticsearch();
+    public static void assertElasticsearchStarted(Shell sh, Installation installation) throws IOException {
+        waitForElasticsearch(installation);
 
         if (isSystemd()) {
             sh.run("systemctl is-active elasticsearch.service");
@@ -299,13 +299,13 @@ public class Packages {
         }
     }
 
-    public static void restartElasticsearch(Shell sh) throws IOException {
+    public static void restartElasticsearch(Shell sh, Installation installation) throws IOException {
         if (isSystemd()) {
             sh.run("systemctl restart elasticsearch.service");
         } else {
             sh.run("service elasticsearch restart");
         }
 
-        waitForElasticsearch();
+        waitForElasticsearch(installation);
     }
 }

@@ -50,6 +50,9 @@ public class DataFrameAnalyticsConfigTests extends AbstractXContentTestCase<Data
                 .setDest(randomDestConfig())
                 .setAnalysis(randomOutlierDetection());
         if (randomBoolean()) {
+            builder.setDescription(randomAlphaOfLength(20));
+        }
+        if (randomBoolean()) {
             builder.setAnalyzedFields(new FetchSourceContext(true,
                 generateRandomStringArray(10, 10, false, false),
                 generateRandomStringArray(10, 10, false, false)));
@@ -62,6 +65,9 @@ public class DataFrameAnalyticsConfigTests extends AbstractXContentTestCase<Data
         }
         if (randomBoolean()) {
             builder.setVersion(Version.CURRENT);
+        }
+        if (randomBoolean()) {
+            builder.setAllowLazyStart(randomBoolean());
         }
         return builder.build();
     }
