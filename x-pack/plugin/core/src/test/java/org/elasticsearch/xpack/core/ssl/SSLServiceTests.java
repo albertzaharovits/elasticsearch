@@ -335,6 +335,9 @@ public class SSLServiceTests extends ESTestCase {
             SSLConfiguration httpConfig = sslService.getHttpTransportSSLConfiguration();
             assertThat(httpConfig.sslClientAuth(), is(SSLClientAuth.NONE));
             assertThat(httpConfig.verificationMode(), is(verificationMode));
+            assertWarnings("Verification mode [xpack.security.http.ssl.verification_mode] does not work correctly when client " +
+                    "authentication [xpack.security.http.ssl.client_authentication] is disabled. Instead, disable verification mode " +
+                    "or enable client authentication.");
         }
         {
             Settings.Builder globalSettingsBuilder = Settings.builder()

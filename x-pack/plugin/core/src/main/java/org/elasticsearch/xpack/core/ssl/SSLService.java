@@ -444,7 +444,7 @@ public class SSLService {
             // unlike the transport SSL configuration, the HTTP SSL configuration is always used in server mode, therefore we can do extra
             // setting validations (around client authentication and verification mode)
             if (onlyServerMode) {
-                configuration.attestExclusiveServerMode(key, deprecationLogger);
+                configuration.attestExclusiveServerMode(key + ".", deprecationLogger);
             }
             sslConfigurations.put(key, configuration);
             contextHolders.computeIfAbsent(configuration, this::createSslContext);
