@@ -737,40 +737,43 @@ public class TransportService extends AbstractLifecycleComponent implements Repo
                 throw new ActionNotFoundTransportException("Action [" + action + "] not found");
             }
             final String executor = reg.getExecutor();
-            if (ThreadPool.Names.SAME.equals(executor)) {
-                //noinspection unchecked
-                reg.processMessageReceived(request, channel);
-            } else {
-                threadPool.executor(executor).execute(new AbstractRunnable() {
-                    @Override
-                    protected void doRun() throws Exception {
-                        //noinspection unchecked
-                        reg.processMessageReceived(request, channel);
-                    }
-
-                    @Override
-                    public boolean isForceExecution() {
-                        return reg.isForceExecution();
-                    }
-
-                    @Override
-                    public void onFailure(Exception e) {
-                        try {
-                            channel.sendResponse(e);
-                        } catch (Exception inner) {
-                            inner.addSuppressed(e);
-                            logger.warn(() -> new ParameterizedMessage(
-                                    "failed to notify channel of error message for action [{}]", action), inner);
+            try (ThreadContext.StoredContext ctx = threadPool.getThreadContext().newStoredContext(true)) {
+                // discard all (and only) transient values, as if the request goes across nodes when only the persistent headers are copied
+                threadPool.getThreadContext().clearTransient();
+                if (ThreadPool.Names.SAME.equals(executor)) {
+                    //noinspection unchecked
+                    reg.processMessageReceived(request, channel);
+                } else {
+                    threadPool.executor(executor).execute(new AbstractRunnable() {
+                        @Override
+                        protected void doRun() throws Exception {
+                            //noinspection unchecked
+                            reg.processMessageReceived(request, channel);
                         }
-                    }
 
-                    @Override
-                    public String toString() {
-                        return "processing of [" + requestId + "][" + action + "]: " + request;
-                    }
-                });
+                        @Override
+                        public boolean isForceExecution() {
+                            return reg.isForceExecution();
+                        }
+
+                        @Override
+                        public void onFailure(Exception e) {
+                            try {
+                                channel.sendResponse(e);
+                            } catch (Exception inner) {
+                                inner.addSuppressed(e);
+                                logger.warn(() -> new ParameterizedMessage(
+                                        "failed to notify channel of error message for action [{}]", action), inner);
+                            }
+                        }
+
+                        @Override
+                        public String toString() {
+                            return "processing of [" + requestId + "][" + action + "]: " + request;
+                        }
+                    });
+                }
             }
-
         } catch (Exception e) {
             try {
                 channel.sendResponse(e);
