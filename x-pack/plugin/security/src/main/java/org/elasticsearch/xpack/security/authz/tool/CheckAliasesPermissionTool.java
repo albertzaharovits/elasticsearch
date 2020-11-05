@@ -8,6 +8,8 @@ package org.elasticsearch.xpack.security.authz.tool;
 
 import joptsimple.OptionSet;
 import joptsimple.OptionSpec;
+import org.apache.lucene.util.automaton.Automaton;
+import org.apache.lucene.util.automaton.Operations;
 import org.elasticsearch.ElasticsearchParseException;
 import org.elasticsearch.cli.ExitCodes;
 import org.elasticsearch.cli.LoggingAwareCommand;
@@ -19,13 +21,20 @@ import org.elasticsearch.common.xcontent.NamedXContentRegistry;
 import org.elasticsearch.common.xcontent.XContentParser;
 import org.elasticsearch.common.xcontent.json.JsonXContent;
 import org.elasticsearch.xpack.core.security.authz.RoleDescriptor;
+import org.elasticsearch.xpack.core.security.authz.permission.IndicesPermission;
+import org.elasticsearch.xpack.core.security.authz.privilege.IndexPrivilege;
+import org.elasticsearch.xpack.core.security.support.Automatons;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.function.Predicate;
 
 import static org.elasticsearch.common.xcontent.XContentParserUtils.ensureExpectedToken;
 
@@ -129,7 +138,78 @@ public class CheckAliasesPermissionTool extends LoggingAwareCommand {
                     ensureExpectedToken(XContentParser.Token.FIELD_NAME, parser.currentToken(), parser);
                     roleName = parser.currentName();
                     parser.nextToken();
-                    RoleDescriptor descriptor = RoleDescriptor.parse(roleName, parser, false);
+                    RoleDescriptor roleDescriptor = RoleDescriptor.parse(roleName, parser, false);
+                    checkAliasesPermissionForRole(roleDescriptor, indexToAliasesMap, indexToWriteAliasMap);
+                }
+            }
+        }
+    }
+
+    private void checkAliasesPermissionForRole(RoleDescriptor roleDescriptor, Map<String, List<String>> indexToAliasesMap, Map<String,
+            String> indexToWriteAliasMap) {
+        final Map<String, Set<String>> aliasesPermissionNamesMap = new HashMap<>();
+        // precompute the set of aliases; it saves predicate matches later on
+        for (List<String> aliases : indexToAliasesMap.values()) {
+            for (String alias : aliases) {
+                aliasesPermissionNamesMap.putIfAbsent(alias, new HashSet<>());
+            }
+        }
+        final Map<String, Set<String>> indicesPermissionNamesMap = new HashMap<>();
+        for (RoleDescriptor.IndicesPrivileges privilege : roleDescriptor.getIndicesPrivileges()) {
+            Predicate<String> namePatternPredicate = IndicesPermission.indexMatcher(Arrays.asList(privilege.getIndices()));
+            for (String index : indexToAliasesMap.keySet()) {
+                if (namePatternPredicate.test(index)) {
+                    indicesPermissionNamesMap.computeIfAbsent(index, k -> new HashSet<>()).addAll(Arrays.asList(privilege.getPrivileges()));
+                }
+            }
+            for (String alias : aliasesPermissionNamesMap.keySet()) {
+                if (namePatternPredicate.test(alias)) {
+                    aliasesPermissionNamesMap.get(alias).addAll(Arrays.asList(privilege.getPrivileges()));
+                }
+            }
+        }
+        final Automaton readAutomaton = IndexPrivilege.get(Set.of("read")).getAutomaton();
+        final Automaton writeAutomaton = IndexPrivilege.get(Set.of("write")).getAutomaton();
+        // only the "read" permissions automaton over aliases
+        Map<String, Automaton> aliasesPermissionReadAutomatonMap = new HashMap<>();
+        // only the "write" permissions automaton over aliases
+        Map<String, Automaton> aliasesPermissionWriteAutomatonMap = new HashMap<>();
+        aliasesPermissionNamesMap.forEach((alias, permissionNames) -> {
+            Automaton aliasesPermissionAutomaton = IndexPrivilege.get(permissionNames).getAutomaton();
+            // precompute the automaton intersection with the "read" and "write" ones
+            aliasesPermissionReadAutomatonMap.put(alias, Operations.intersection(aliasesPermissionAutomaton, readAutomaton));
+            aliasesPermissionWriteAutomatonMap.put(alias, Operations.intersection(aliasesPermissionAutomaton, writeAutomaton));
+        });
+        // check the intersection of permission automatons
+        for (Map.Entry<String, List<String>> indexAndAliases : indexToAliasesMap.entrySet()) {
+            String index = indexAndAliases.getKey();
+            Automaton indexPermissionReadAutomaton;
+            Automaton indexPermissionWriteAutomaton;
+            if (indicesPermissionNamesMap.containsKey(index)) {
+                Automaton indexPermissionAutomaton = IndexPrivilege.get(indicesPermissionNamesMap.get(index)).getAutomaton();
+                indexPermissionReadAutomaton = Operations.intersection(indexPermissionAutomaton, readAutomaton);
+                indexPermissionWriteAutomaton = Operations.intersection(indexPermissionAutomaton, writeAutomaton);
+            } else {
+                // no permission on the index
+                indexPermissionReadAutomaton = Automatons.EMPTY;
+                indexPermissionWriteAutomaton = Automatons.EMPTY;
+            }
+            // check if "read" permission on any of the aliases is a superset of "read" on the index
+            for (String alias : indexAndAliases.getValue()) {
+                Automaton aliasPermissionReadAutomaton = aliasesPermissionReadAutomatonMap.get(alias);
+                if (Operations.subsetOf(indexPermissionReadAutomaton, aliasPermissionReadAutomaton)) {
+                }
+            }
+            // check if "write" permission on the write alias is a superset of "write" on the index
+            String writeAlias = null;
+            if (indexAndAliases.getValue().size() == 1) {
+                writeAlias = indexAndAliases.getValue().get(0);
+            } else if (indexToWriteAliasMap.containsKey(index)) {
+                writeAlias = indexToWriteAliasMap.get(index);
+            }
+            if (writeAlias != null) {
+                Automaton aliasPermissionWriteAutomaton = aliasesPermissionWriteAutomatonMap.getOrDefault(writeAlias, Automatons.EMPTY);
+                if (Operations.subsetOf(indexPermissionWriteAutomaton, aliasPermissionWriteAutomaton)) {
                 }
             }
         }
