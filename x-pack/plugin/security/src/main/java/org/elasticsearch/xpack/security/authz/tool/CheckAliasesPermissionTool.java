@@ -36,7 +36,7 @@ public class CheckAliasesPermissionTool extends LoggingAwareCommand {
     final OptionSpec<String> diagnosticPathSpec;
 
     public CheckAliasesPermissionTool() {
-        super("Given the index to alias association, as well as the security roles, tell which roles grant more privileges on the alias " +
+        super("Given the index-alias association, as well as the security roles, tell which roles grant more privileges on the alias " +
                 "than on the pointed to indices");
         allRolesPathSpec =
                 parser.accepts("roles", "path to the input file containing all the security roles in the cluster").withRequiredArg();
@@ -105,11 +105,10 @@ public class CheckAliasesPermissionTool extends LoggingAwareCommand {
                         AliasMetadata aliasMetadata = AliasMetadata.Builder.fromXContent(parser);
                         indexToAliasesMap.computeIfAbsent(indexName, k -> new ArrayList<>())
                                 .add(aliasMetadata.alias());
-                        if (aliasMetadata.writeIndex()) {
+                        if (aliasMetadata.writeIndex() != null && aliasMetadata.writeIndex()) {
                             indexToWriteAliasMap.put(indexName, aliasMetadata.alias());
                         }
                     }
-                    ensureExpectedToken(XContentParser.Token.END_OBJECT, parser.nextToken(), parser); // aliases
                     ensureExpectedToken(XContentParser.Token.END_OBJECT, parser.nextToken(), parser); // index name
                 }
             }
