@@ -16,6 +16,8 @@ import org.elasticsearch.cli.LoggingAwareCommand;
 import org.elasticsearch.cli.Terminal;
 import org.elasticsearch.cli.UserException;
 import org.elasticsearch.cluster.metadata.AliasMetadata;
+import org.elasticsearch.common.Strings;
+import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.xcontent.LoggingDeprecationHandler;
 import org.elasticsearch.common.xcontent.NamedXContentRegistry;
 import org.elasticsearch.common.xcontent.XContentParser;
@@ -42,6 +44,7 @@ public class CheckAliasesPermissionTool extends LoggingAwareCommand {
 
     final OptionSpec<String> allRolesPathSpec;
     final OptionSpec<String> allAliasesPathSpec;
+    final OptionSpec<String> allIndexSettingsPathSpec;
     final OptionSpec<String> diagnosticPathSpec;
 
     public CheckAliasesPermissionTool() {
@@ -51,6 +54,8 @@ public class CheckAliasesPermissionTool extends LoggingAwareCommand {
                 parser.accepts("roles", "path to the input file containing all the security roles in the cluster").withRequiredArg();
         allAliasesPathSpec =
                 parser.accepts("aliases", "path to the input file containing all the aliases in the cluster").withRequiredArg();
+        allIndexSettingsPathSpec =
+                parser.accepts("settings", "path to the input file containing the index settings").withRequiredArg();
         diagnosticPathSpec =
                 parser.accepts("diagnostic",
                         "path to the diagnostic of the cluster, i.e. the unzipped output dir of the 'diagnostic.sh' utility")
@@ -65,29 +70,49 @@ public class CheckAliasesPermissionTool extends LoggingAwareCommand {
     protected void execute(Terminal terminal, OptionSet options) throws Exception {
         final Path allRolesPath;
         final Path allAliasesPath;
-
-        if (options.has(diagnosticPathSpec)) {
-            if (options.has(allRolesPathSpec) || options.has(allAliasesPathSpec)) {
+        final Path allIndexSettingsPath;
+        if (false == (options.has(diagnosticPathSpec) || options.has(allRolesPathSpec) || options.has(allAliasesPathSpec) ||
+                options.has(allIndexSettingsPathSpec))) {
+            throw new UserException(ExitCodes.CONFIG, "No option specified. Try specifying the diagnostic dir path option.");
+        } else if (options.has(diagnosticPathSpec)) {
+            if (options.has(allRolesPathSpec) || options.has(allAliasesPathSpec) || options.has(allIndexSettingsPathSpec)) {
                 throw new UserException(ExitCodes.CONFIG, "The diagnostic dir path option cannot be used in conjunction with the " +
-                        "other options");
+                        "other options.");
             }
-            allRolesPath = Path.of(diagnosticPathSpec.value(options)).resolve("commercial").resolve("security_roles.json");
+            Path allRolesPath1 = Path.of(diagnosticPathSpec.value(options)).resolve("commercial").resolve("security_roles.json");
+            if (Files.exists(allRolesPath1) == false) {
+                // "security_roles" path differs in previous version of the diagnostic tool
+                Path allRolesPath2 = Path.of(diagnosticPathSpec.value(options)).resolve("security_roles.json");
+                if (Files.exists(allRolesPath2) == false) {
+                    throw new UserException(ExitCodes.CONFIG,
+                            "The roles file paths [" + allRolesPath1 + "] and [" + allRolesPath2 + "] are missing.");
+                }
+                allRolesPath = allRolesPath2;
+            } else {
+                allRolesPath = allRolesPath1;
+            }
             allAliasesPath = Path.of(diagnosticPathSpec.value(options)).resolve("alias.json");
-        } else if (options.has(allRolesPathSpec) && options.has(allAliasesPathSpec)) {
+            allIndexSettingsPath = Path.of(diagnosticPathSpec.value(options)).resolve("settings.json");
+        } else if (options.has(allRolesPathSpec) && options.has(allAliasesPathSpec) && options.has(allIndexSettingsPathSpec)) {
             allRolesPath = Path.of(allRolesPathSpec.value(options));
             allAliasesPath = Path.of(allAliasesPathSpec.value(options));
+            allIndexSettingsPath = Path.of(allIndexSettingsPathSpec.value(options));
         } else if (false == options.has(allRolesPathSpec)) {
             throw new UserException(ExitCodes.CONFIG, "Missing path option for the security roles file");
-        } else {
+        } else if (false == options.has(allAliasesPathSpec)) {
             throw new UserException(ExitCodes.CONFIG, "Missing path option for the aliases file");
+        } else {
+            throw new UserException(ExitCodes.CONFIG, "Missing path option for the index settings file");
         }
 
         if (Files.exists(allRolesPath) == false) {
             throw new UserException(ExitCodes.CONFIG, "The roles file [" + allRolesPath + "] is missing");
         }
-
         if (Files.exists(allAliasesPath) == false) {
-            throw new UserException(ExitCodes.CONFIG, "The aliases file [" + allRolesPath + "] is missing");
+            throw new UserException(ExitCodes.CONFIG, "The aliases file [" + allAliasesPath + "] is missing");
+        }
+        if (Files.exists(allIndexSettingsPath) == false) {
+            throw new UserException(ExitCodes.CONFIG, "The index settings file [" + allIndexSettingsPath + "] is missing");
         }
 
         final Map<String, List<String>> indexToAliasesMap = new HashMap<>();
@@ -126,6 +151,33 @@ public class CheckAliasesPermissionTool extends LoggingAwareCommand {
             terminal.println("No aliases, nothing to check.");
             return;
         }
+        final Map<String, String> indexToLifecycleAliasMap = new HashMap<>();
+        {
+            byte[] allIndexSettingsBytes = Files.readAllBytes(allIndexSettingsPath);
+            XContentParser parser = JsonXContent.jsonXContent.createParser(NamedXContentRegistry.EMPTY,
+                    LoggingDeprecationHandler.INSTANCE, allIndexSettingsBytes);
+            XContentParser.Token token = parser.nextToken();
+            if (token != null) {
+                String indexName = null;
+                ensureExpectedToken(XContentParser.Token.START_OBJECT, parser.currentToken(), parser);
+                while (parser.nextToken() != XContentParser.Token.END_OBJECT) {
+                    ensureExpectedToken(XContentParser.Token.FIELD_NAME, parser.currentToken(), parser);
+                    indexName = parser.currentName();
+                    ensureExpectedToken(XContentParser.Token.START_OBJECT, parser.nextToken(), parser);
+                    ensureExpectedToken(XContentParser.Token.FIELD_NAME, parser.nextToken(), parser);
+                    if (false == "settings".equals(parser.currentName())) {
+                        throw new ElasticsearchParseException("failed to parse settings for index [{}]", indexName);
+                    }
+                    ensureExpectedToken(XContentParser.Token.START_OBJECT, parser.nextToken(), parser);
+                    Settings settings = Settings.fromXContent(parser);
+                    String lifecycleAlias = settings.get("index.lifecycle.rollover_alias");
+                    if (Strings.hasText(lifecycleAlias)) {
+                        indexToLifecycleAliasMap.put(indexName, lifecycleAlias);
+                    }
+                    ensureExpectedToken(XContentParser.Token.END_OBJECT, parser.nextToken(), parser); // index name
+                }
+            }
+        }
         {
             byte[] allRolesBytes = Files.readAllBytes(allRolesPath);
             XContentParser parser = JsonXContent.jsonXContent.createParser(NamedXContentRegistry.EMPTY,
@@ -139,14 +191,14 @@ public class CheckAliasesPermissionTool extends LoggingAwareCommand {
                     roleName = parser.currentName();
                     parser.nextToken();
                     RoleDescriptor roleDescriptor = RoleDescriptor.parse(roleName, parser, false);
-                    checkAliasesPermissionForRole(roleDescriptor, indexToAliasesMap, indexToWriteAliasMap);
+                    checkAliasesPermissionForRole(roleDescriptor, indexToAliasesMap, indexToWriteAliasMap, indexToLifecycleAliasMap);
                 }
             }
         }
     }
 
     private void checkAliasesPermissionForRole(RoleDescriptor roleDescriptor, Map<String, List<String>> indexToAliasesMap, Map<String,
-            String> indexToWriteAliasMap) {
+            String> indexToWriteAliasMap, Map<String, String> indexToLifecycleAliasMap) {
         final Map<String, Set<String>> aliasesPermissionNamesMap = new HashMap<>();
         // precompute the set of aliases; it saves predicate matches later on
         for (List<String> aliases : indexToAliasesMap.values()) {
@@ -183,6 +235,7 @@ public class CheckAliasesPermissionTool extends LoggingAwareCommand {
         // check the intersection of permission automatons
         for (Map.Entry<String, List<String>> indexAndAliases : indexToAliasesMap.entrySet()) {
             String index = indexAndAliases.getKey();
+            String lifecycleAlias = indexToLifecycleAliasMap.get(index);
             Automaton indexPermissionReadAutomaton;
             Automaton indexPermissionWriteAutomaton;
             if (indicesPermissionNamesMap.containsKey(index)) {
@@ -198,6 +251,11 @@ public class CheckAliasesPermissionTool extends LoggingAwareCommand {
             for (String alias : indexAndAliases.getValue()) {
                 Automaton aliasPermissionReadAutomaton = aliasesPermissionReadAutomatonMap.get(alias);
                 if (Operations.subsetOf(indexPermissionReadAutomaton, aliasPermissionReadAutomaton)) {
+                    if (alias.equals(lifecycleAlias)) {
+
+                    } else {
+
+                    }
                 }
             }
             // check if "write" permission on the write alias is a superset of "write" on the index
@@ -210,6 +268,11 @@ public class CheckAliasesPermissionTool extends LoggingAwareCommand {
             if (writeAlias != null) {
                 Automaton aliasPermissionWriteAutomaton = aliasesPermissionWriteAutomatonMap.getOrDefault(writeAlias, Automatons.EMPTY);
                 if (Operations.subsetOf(indexPermissionWriteAutomaton, aliasPermissionWriteAutomaton)) {
+                    if (writeAlias.equals(lifecycleAlias)) {
+
+                    } else {
+
+                    }
                 }
             }
         }
