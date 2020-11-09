@@ -191,16 +191,18 @@ public class CheckAliasesPermissionTool extends LoggingAwareCommand {
                     roleName = parser.currentName();
                     parser.nextToken();
                     RoleDescriptor roleDescriptor = RoleDescriptor.parse(roleName, parser, false);
-                    checkAliasesPermissionForRole(roleDescriptor, indexToAliasesMap, indexToWriteAliasMap, indexToLifecycleAliasMap);
+                    checkAliasesPermissionForRole(terminal, roleDescriptor, indexToAliasesMap, indexToWriteAliasMap,
+                            indexToLifecycleAliasMap);
                 }
             }
         }
     }
 
-    private void checkAliasesPermissionForRole(RoleDescriptor roleDescriptor, Map<String, List<String>> indexToAliasesMap, Map<String,
-            String> indexToWriteAliasMap, Map<String, String> indexToLifecycleAliasMap) {
+    private void checkAliasesPermissionForRole(Terminal terminal, RoleDescriptor roleDescriptor,
+                                               Map<String, List<String>> indexToAliasesMap,
+                                               Map<String, String> indexToWriteAliasMap, Map<String, String> indexToLifecycleAliasMap) {
         final Map<String, Set<String>> aliasesPermissionNamesMap = new HashMap<>();
-        // precompute the set of aliases; it saves predicate matches later on
+        // precompute the set of aliases; it saves predicate-match operations later on
         for (List<String> aliases : indexToAliasesMap.values()) {
             for (String alias : aliases) {
                 aliasesPermissionNamesMap.putIfAbsent(alias, new HashSet<>());
@@ -228,7 +230,7 @@ public class CheckAliasesPermissionTool extends LoggingAwareCommand {
         Map<String, Automaton> aliasesPermissionWriteAutomatonMap = new HashMap<>();
         aliasesPermissionNamesMap.forEach((alias, permissionNames) -> {
             Automaton aliasesPermissionAutomaton = IndexPrivilege.get(permissionNames).getAutomaton();
-            // precompute the automaton intersection with the "read" and "write" ones
+            // precompute the permission automaton intersection with the "read" and "write" automaton
             aliasesPermissionReadAutomatonMap.put(alias, Operations.intersection(aliasesPermissionAutomaton, readAutomaton));
             aliasesPermissionWriteAutomatonMap.put(alias, Operations.intersection(aliasesPermissionAutomaton, writeAutomaton));
         });
@@ -249,12 +251,16 @@ public class CheckAliasesPermissionTool extends LoggingAwareCommand {
             }
             // check if "read" permission on any of the aliases is a superset of "read" on the index
             for (String alias : indexAndAliases.getValue()) {
+                terminal.println(Terminal.Verbosity.VERBOSE, "Verifying \"read\" permissions on the index [" + index + "] " +
+                                "relative to the alias [" + alias + "], granted by the role [" + roleDescriptor.getName() + "].");
                 Automaton aliasPermissionReadAutomaton = aliasesPermissionReadAutomatonMap.get(alias);
                 if (Operations.subsetOf(indexPermissionReadAutomaton, aliasPermissionReadAutomaton)) {
                     if (alias.equals(lifecycleAlias)) {
-
+                        terminal.println("Role [" + roleDescriptor.getName() + "] grants more \"read\" permissions on the " +
+                                "lifecycle rollover alias [" + alias + "] than on the pointed to index [" + index + "].");
                     } else {
-
+                        terminal.println("Role [" + roleDescriptor.getName() + "] grants more \"read\" permissions on the " +
+                                "alias [" + alias + "] than on the pointed to index [" + index + "].");
                     }
                 }
             }
@@ -264,14 +270,21 @@ public class CheckAliasesPermissionTool extends LoggingAwareCommand {
                 writeAlias = indexAndAliases.getValue().get(0);
             } else if (indexToWriteAliasMap.containsKey(index)) {
                 writeAlias = indexToWriteAliasMap.get(index);
+            } else {
+                terminal.println(Terminal.Verbosity.VERBOSE, "Index [" + index + "] is pointed to by several aliases, " +
+                        "none of which is a write-alias. Skipping alias write permissions check.");
             }
             if (writeAlias != null) {
+                terminal.println(Terminal.Verbosity.VERBOSE, "Verifying \"write\" permissions on the index [" + index + "] " +
+                        "relative to the alias [" + writeAlias + "], granted by the role [" + roleDescriptor.getName() + "].");
                 Automaton aliasPermissionWriteAutomaton = aliasesPermissionWriteAutomatonMap.getOrDefault(writeAlias, Automatons.EMPTY);
                 if (Operations.subsetOf(indexPermissionWriteAutomaton, aliasPermissionWriteAutomaton)) {
                     if (writeAlias.equals(lifecycleAlias)) {
-
+                        terminal.println("Role [" + roleDescriptor.getName() + "] grants more \"write\" permissions on the " +
+                                "lifecycle rollover alias [" + writeAlias + "] than on the pointed to index [" + index + "].");
                     } else {
-
+                        terminal.println("Role [" + roleDescriptor.getName() + "] grants more \"write\" permissions on the " +
+                                "alias [" + writeAlias + "] than on the pointed to index [" + index + "].");
                     }
                 }
             }
