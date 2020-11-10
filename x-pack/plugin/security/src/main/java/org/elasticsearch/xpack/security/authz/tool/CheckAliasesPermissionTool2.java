@@ -6,8 +6,6 @@
 
 package org.elasticsearch.xpack.security.authz.tool;
 
-import com.carrotsearch.hppc.cursors.ObjectCursor;
-import com.carrotsearch.hppc.cursors.ObjectObjectCursor;
 import joptsimple.OptionSet;
 import joptsimple.OptionSpec;
 import org.apache.lucene.util.automaton.Automaton;
@@ -17,11 +15,10 @@ import org.elasticsearch.cli.ExitCodes;
 import org.elasticsearch.cli.LoggingAwareCommand;
 import org.elasticsearch.cli.Terminal;
 import org.elasticsearch.cli.UserException;
-import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.metadata.AliasMetadata;
+import org.elasticsearch.cluster.metadata.DataStream;
 import org.elasticsearch.cluster.metadata.IndexAbstraction;
 import org.elasticsearch.cluster.metadata.IndexMetadata;
-import org.elasticsearch.cluster.metadata.Metadata;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.xcontent.LoggingDeprecationHandler;
@@ -31,7 +28,6 @@ import org.elasticsearch.common.xcontent.json.JsonXContent;
 import org.elasticsearch.index.Index;
 import org.elasticsearch.xpack.core.security.authz.RoleDescriptor;
 import org.elasticsearch.xpack.core.security.authz.permission.IndicesPermission;
-import org.elasticsearch.xpack.core.security.authz.permission.Role;
 import org.elasticsearch.xpack.core.security.authz.privilege.IndexPrivilege;
 import org.elasticsearch.xpack.core.security.support.Automatons;
 
@@ -41,27 +37,32 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Predicate;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 import static org.elasticsearch.common.xcontent.XContentParserUtils.ensureExpectedToken;
 
-public class CheckAliasesPermissionTool extends LoggingAwareCommand {
+public class CheckAliasesPermissionTool2 extends LoggingAwareCommand {
 
     final OptionSpec<String> allRolesPathSpec;
-    final OptionSpec<String> clusterStatePathSpec;
+    final OptionSpec<String> allAliasesPathSpec;
+    final OptionSpec<String> allIndexSettingsPathSpec;
     final OptionSpec<String> diagnosticPathSpec;
 
-    public CheckAliasesPermissionTool() {
+    public CheckAliasesPermissionTool2() {
         super("Given the index-alias association, as well as the security roles, tell which roles grant more privileges on the alias " +
                 "than on the pointed to indices");
         allRolesPathSpec =
                 parser.accepts("roles", "path to the input file containing all the security roles in the cluster").withRequiredArg();
-        clusterStatePathSpec =
-                parser.accepts("cluster_state", "path to the input file containing the cluster state").withRequiredArg();
+        allAliasesPathSpec =
+                parser.accepts("aliases", "path to the input file containing all the aliases in the cluster").withRequiredArg();
+        allIndexSettingsPathSpec =
+                parser.accepts("settings", "path to the input file containing the index settings").withRequiredArg();
         diagnosticPathSpec =
                 parser.accepts("diagnostic",
                         "path to the diagnostic of the cluster, i.e. the unzipped output dir of the 'diagnostic.sh' utility")
@@ -69,17 +70,19 @@ public class CheckAliasesPermissionTool extends LoggingAwareCommand {
     }
 
     public static void main(String[] args) throws Exception {
-        exit(new CheckAliasesPermissionTool().main(args, Terminal.DEFAULT));
+        exit(new CheckAliasesPermissionTool2().main(args, Terminal.DEFAULT));
     }
 
     @Override
     protected void execute(Terminal terminal, OptionSet options) throws Exception {
         final Path allRolesPath;
-        final Path clusterStatePath;
-        if (false == (options.has(diagnosticPathSpec) || options.has(allRolesPathSpec) || options.has(clusterStatePathSpec))) {
+        final Path allAliasesPath;
+        final Path allIndexSettingsPath;
+        if (false == (options.has(diagnosticPathSpec) || options.has(allRolesPathSpec) || options.has(allAliasesPathSpec) ||
+                options.has(allIndexSettingsPathSpec))) {
             throw new UserException(ExitCodes.CONFIG, "No option specified. Try specifying the diagnostic dir path option.");
         } else if (options.has(diagnosticPathSpec)) {
-            if (options.has(allRolesPathSpec) || options.has(clusterStatePathSpec)) {
+            if (options.has(allRolesPathSpec) || options.has(allAliasesPathSpec) || options.has(allIndexSettingsPathSpec)) {
                 throw new UserException(ExitCodes.CONFIG, "The diagnostic dir path option cannot be used in conjunction with the " +
                         "other options.");
             }
@@ -95,27 +98,80 @@ public class CheckAliasesPermissionTool extends LoggingAwareCommand {
             } else {
                 allRolesPath = allRolesPath1;
             }
-            clusterStatePath = Path.of(diagnosticPathSpec.value(options)).resolve("cluster_state.json");
-        } else if (options.has(allRolesPathSpec) && options.has(clusterStatePathSpec)) {
+            allAliasesPath = Path.of(diagnosticPathSpec.value(options)).resolve("alias.json");
+            allIndexSettingsPath = Path.of(diagnosticPathSpec.value(options)).resolve("settings.json");
+        } else if (options.has(allRolesPathSpec) && options.has(allAliasesPathSpec) && options.has(allIndexSettingsPathSpec)) {
             allRolesPath = Path.of(allRolesPathSpec.value(options));
-            clusterStatePath = Path.of(clusterStatePathSpec.value(options));
+            allAliasesPath = Path.of(allAliasesPathSpec.value(options));
+            allIndexSettingsPath = Path.of(allIndexSettingsPathSpec.value(options));
+        } else if (false == options.has(allRolesPathSpec)) {
+            throw new UserException(ExitCodes.CONFIG, "Missing path option for the security roles file");
+        } else if (false == options.has(allAliasesPathSpec)) {
+            throw new UserException(ExitCodes.CONFIG, "Missing path option for the aliases file");
         } else {
-            throw new UserException(ExitCodes.CONFIG, "Missing path options for security roles and cluster state");
+            throw new UserException(ExitCodes.CONFIG, "Missing path option for the index settings file");
         }
 
         if (Files.exists(allRolesPath) == false) {
             throw new UserException(ExitCodes.CONFIG, "The roles file [" + allRolesPath + "] is missing");
         }
-        if (Files.exists(clusterStatePath) == false) {
-            throw new UserException(ExitCodes.CONFIG, "The cluster state file [" + clusterStatePath + "] is missing");
+        if (Files.exists(allAliasesPath) == false) {
+            throw new UserException(ExitCodes.CONFIG, "The aliases file [" + allAliasesPath + "] is missing");
+        }
+        if (Files.exists(allIndexSettingsPath) == false) {
+            throw new UserException(ExitCodes.CONFIG, "The index settings file [" + allIndexSettingsPath + "] is missing");
         }
 
-        final Map<String, IndexAbstraction> aliasAndIndexLookup = new HashMap<>();
+        final Pattern dataStreamPattern = Pattern.compile("^" + Pattern.quote(DataStream.BACKING_INDEX_PREFIX) + "(.+)-\\d{7}$");
+        final Map<String, IndexAbstraction> mockAliasAndIndexLookup = new HashMap<>();
+        final Map<String, IndexMetadata> indexMetadataMap = new HashMap<>();
+        {
+            byte[] allIndexSettingsBytes = Files.readAllBytes(allIndexSettingsPath);
+            XContentParser parser = JsonXContent.jsonXContent.createParser(NamedXContentRegistry.EMPTY,
+                    LoggingDeprecationHandler.INSTANCE, allIndexSettingsBytes);
+            XContentParser.Token token = parser.nextToken();
+            if (token != null) {
+                ensureExpectedToken(XContentParser.Token.START_OBJECT, parser.currentToken(), parser);
+                while (parser.nextToken() != XContentParser.Token.END_OBJECT) {
+                    ensureExpectedToken(XContentParser.Token.FIELD_NAME, parser.currentToken(), parser);
+                    String indexName = parser.currentName();
+                    ensureExpectedToken(XContentParser.Token.START_OBJECT, parser.nextToken(), parser);
+                    ensureExpectedToken(XContentParser.Token.FIELD_NAME, parser.nextToken(), parser);
+                    if (false == "settings".equals(parser.currentName())) {
+                        throw new ElasticsearchParseException("failed to parse settings for index [{}]", indexName);
+                    }
+                    ensureExpectedToken(XContentParser.Token.START_OBJECT, parser.nextToken(), parser);
+                    Settings settings = Settings.fromXContent(parser);
+                    indexMetadataMap.put(indexName, IndexMetadata.builder(indexName).settings(settings).build());
+                    ensureExpectedToken(XContentParser.Token.END_OBJECT, parser.nextToken(), parser); // index name
+                }
+            }
+        }
+        Map<String, List<Index>> dataStreamToIndicesMap = new HashMap<>();
+        for (Map.Entry<String, IndexMetadata> entry : indexMetadataMap.entrySet()) {
+            Matcher matcher = dataStreamPattern.matcher(entry.getKey());
+            if (matcher.find()) {
+                String dataStreamName = matcher.group();
+                dataStreamToIndicesMap.computeIfAbsent(dataStreamName, (k) -> new ArrayList<>()).add(new Index(entry.getKey(), "uuid"));
+            } else {
+                mockAliasAndIndexLookup.put(entry.getKey(), new IndexAbstraction.Index(entry.getValue()));
+            }
+        }
+        dataStreamToIndicesMap.forEach((dataStreamName, indices) -> {
+            DataStream dataStream = new DataStream(dataStreamName, new DataStream.TimestampField("@timestamp"),
+                    dataStreamToIndicesMap.get(dataStreamName));
+            IndexAbstraction.DataStream dataStreamAbstraction = new IndexAbstraction.DataStream(dataStream,
+                    indices.stream().map(index -> indexMetadataMap.get(index.getName())).collect(Collectors.toList()));
+            mockAliasAndIndexLookup.put(dataStreamName, dataStreamAbstraction);
+            indices.stream().forEach(index -> {
+                IndexMetadata indexMetadata = indexMetadataMap.get(index.getName());
+                mockAliasAndIndexLookup.put(index.getName(), new IndexAbstraction.Index(indexMetadata, dataStreamAbstraction));
+            });
+        });
         final Map<String, Set<String>> aliasToIndicesMap = new HashMap<>();
         final Map<String, String> aliasToWriteIndexMap = new HashMap<>();
-        final Map<String, String> indexToLifecycleRolloverAliasMap = new HashMap<>();
         {
-            byte[] allAliasesBytes = Files.readAllBytes(clusterStatePath);
+            byte[] allAliasesBytes = Files.readAllBytes(allAliasesPath);
             XContentParser parser = JsonXContent.jsonXContent.createParser(NamedXContentRegistry.EMPTY,
                     LoggingDeprecationHandler.INSTANCE, allAliasesBytes);
             XContentParser.Token token = parser.nextToken();
@@ -123,40 +179,34 @@ public class CheckAliasesPermissionTool extends LoggingAwareCommand {
                 ensureExpectedToken(XContentParser.Token.START_OBJECT, parser.currentToken(), parser);
                 while (parser.nextToken() != XContentParser.Token.END_OBJECT) {
                     ensureExpectedToken(XContentParser.Token.FIELD_NAME, parser.currentToken(), parser);
-                    String fieldName = parser.currentName();
-                    if ("metadata".equals(fieldName)) {
-                        parser.nextToken();
-                        Metadata metadata = Metadata.fromXContent(parser);
-                        for (Iterator<ObjectObjectCursor<String, IndexMetadata>> it = metadata.indices().iterator(); it.hasNext(); ) {
-                            ObjectObjectCursor<String, IndexMetadata> indexCursor = it.next();
-                            String indexName = indexCursor.key;
-                            IndexMetadata indexMetadata = indexCursor.value;
-                            for (Iterator<ObjectObjectCursor<String, AliasMetadata>> iter = indexMetadata.getAliases().iterator(); iter.hasNext(); ) {
-                                ObjectObjectCursor<String, AliasMetadata> aliasCursor = iter.next();
-                                String aliasName = aliasCursor.key;
-                                AliasMetadata aliasMetadata = aliasCursor.value;
-                                aliasToIndicesMap.computeIfAbsent(aliasName, (k) -> new HashSet<>()).add(indexName);
-                                if (aliasMetadata.writeIndex() != null && aliasMetadata.writeIndex()) {
-                                    assert false == aliasToWriteIndexMap.containsKey(aliasName);
-                                    aliasToWriteIndexMap.put(aliasName, indexName);
-                                }
-                            }
-                            String lifecycleRolloverAlias = indexMetadata.getSettings().get("index.lifecycle.rollover_alias");
-                            if (Strings.hasText(lifecycleRolloverAlias)) {
-                                indexToLifecycleRolloverAliasMap.put(indexName, lifecycleRolloverAlias);
-                                assert aliasToIndicesMap.containsKey(lifecycleRolloverAlias);
-                                assert aliasToIndicesMap.get(lifecycleRolloverAlias).contains(indexName);
-                            }
-                        }
-                    } else {
-                        parser.nextToken();
-                        parser.skipChildren();
+                    String indexName = parser.currentName();
+                    ensureExpectedToken(XContentParser.Token.START_OBJECT, parser.nextToken(), parser);
+                    ensureExpectedToken(XContentParser.Token.FIELD_NAME, parser.nextToken(), parser);
+                    if (false == "aliases".equals(parser.currentName())) {
+                        throw new ElasticsearchParseException("failed to parse aliases for index [{}]", indexName);
                     }
+                    ensureExpectedToken(XContentParser.Token.START_OBJECT, parser.nextToken(), parser);
+                    while (parser.nextToken() != XContentParser.Token.END_OBJECT) {
+                        ensureExpectedToken(XContentParser.Token.FIELD_NAME, parser.currentToken(), parser);
+                        AliasMetadata aliasMetadata = AliasMetadata.Builder.fromXContent(parser);
+                        aliasToIndicesMap.computeIfAbsent(aliasMetadata.alias(), k -> new HashSet<>()).add(indexName);
+                        if (aliasMetadata.writeIndex() != null && aliasMetadata.writeIndex()) {
+                            aliasToWriteIndexMap.put(aliasMetadata.alias(), indexName);
+                        }
+                        if (mockAliasAndIndexLookup.containsKey(aliasMetadata.getAlias())) {
+                            ((IndexAbstraction.Alias) mockAliasAndIndexLookup.get(aliasMetadata.getAlias()))
+                                    .addIndex(indexMetadataMap.get(indexName));
+                        } else {
+                            mockAliasAndIndexLookup.put(aliasMetadata.getAlias(), new IndexAbstraction.Alias(aliasMetadata,
+                                    indexMetadataMap.get(indexName)));
+                        }
+                    }
+                    ensureExpectedToken(XContentParser.Token.END_OBJECT, parser.nextToken(), parser); // index name
                 }
             }
         }
         if (aliasToIndicesMap.isEmpty()) {
-            terminal.println("No aliases present, nothing to check, all good.");
+            terminal.println("No aliases, nothing to check.");
             return;
         }
         {
@@ -165,19 +215,56 @@ public class CheckAliasesPermissionTool extends LoggingAwareCommand {
                     LoggingDeprecationHandler.INSTANCE, allRolesBytes);
             XContentParser.Token token = parser.nextToken();
             if (token != null) {
-                String roleName = null;
                 ensureExpectedToken(XContentParser.Token.START_OBJECT, parser.currentToken(), parser);
                 while (parser.nextToken() != XContentParser.Token.END_OBJECT) {
                     ensureExpectedToken(XContentParser.Token.FIELD_NAME, parser.currentToken(), parser);
-                    roleName = parser.currentName();
+                    String roleName = parser.currentName();
                     parser.nextToken();
                     RoleDescriptor roleDescriptor = RoleDescriptor.parse(roleName, parser, false);
-                    Role.Builder()
+//      String lifecycleAlias = settings.get("index.lifecycle.rollover_alias");
+//      if (Strings.hasText(lifecycleAlias)) {
+//          indexToLifecycleAliasMap.put(indexName, lifecycleAlias);
+//      }
 //                    checkAliasesPermissionForRole(terminal, roleDescriptor, indexToAliasesMap, indexToWriteAliasMap,
 //                            indexToLifecycleAliasMap);
                 }
             }
         }
+    }
+
+    private Map<String, IndexAbstraction> mockIndexAndAliasLookup(Map<String, IndexMetadata> indexMetadataMap, Map<String,
+            Set<String>> aliasToIndicesMap) {
+        Pattern pattern = Pattern.compile("^" + Pattern.quote(DataStream.BACKING_INDEX_PREFIX) + "(.+)-\\d{7}$");
+        Map<String, IndexAbstraction> result = new HashMap<>();
+        Map<String, List<Index>> dataStreamToIndicesMap = new HashMap<>();
+        for (Map.Entry<String, IndexMetadata> entry : indexMetadataMap.entrySet()) {
+            Matcher matcher = pattern.matcher(entry.getKey());
+            if (matcher.find()) {
+                String dataStreamName = matcher.group();
+                dataStreamToIndicesMap.computeIfAbsent(dataStreamName, (k) -> new ArrayList<>()).add(new Index(entry.getKey(), "uuid"));
+            }
+        }
+        dataStreamToIndicesMap.forEach((dataStreamName, indices) -> {
+            DataStream dataStream = new DataStream(dataStreamName, new DataStream.TimestampField("@timestamp"),
+                    dataStreamToIndicesMap.get(dataStreamName));
+            result.put(dataStreamName, new IndexAbstraction.DataStream(dataStream,
+                    indices.stream().map(index -> indexMetadataMap.get(index.getName())).collect(Collectors.toList())));
+        });
+            for (Map.Entry<String, IndexMetadata> entry : indexMetadataMap.entrySet()) {
+            Matcher matcher = pattern.matcher(entry.getKey());
+            if (matcher.find()) {
+                String dataStreamName = matcher.group();
+                DataStream dataStream = new DataStream(dataStreamName, new DataStream.TimestampField("@timestamp"),
+                        dataStreamToIndicesMap.get(dataStreamName));
+                result.put(new IndexAbstraction.DataStream(dataStream, dataStreamToIndicesMap.get(dataStreamName).forEach(index -> {
+
+                });));
+            } else {
+                result.put(entry.getKey(), new IndexAbstraction.Index(entry.getValue()));
+            }
+        }
+
+        return result;
     }
 
     private void checkAliasesPermissionForRole(Terminal terminal, RoleDescriptor roleDescriptor,
