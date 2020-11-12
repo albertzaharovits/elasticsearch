@@ -102,8 +102,8 @@ public class AuthorizationService {
         Setting.boolSetting(setting("authc.anonymous.authz_exception"), true, Property.NodeScope);
     private static final AuthorizationInfo SYSTEM_AUTHZ_INFO =
         () -> Collections.singletonMap(PRINCIPAL_ROLES_FIELD_NAME, new String[] { SystemUser.ROLE_NAME });
-    private static final String IMPLIED_INDEX_ACTION = IndexAction.NAME + ":op_type/index";
-    private static final String IMPLIED_CREATE_ACTION = IndexAction.NAME + ":op_type/create";
+    public static final String IMPLIED_INDEX_ACTION = IndexAction.NAME + ":op_type/index";
+    public static final String IMPLIED_CREATE_ACTION = IndexAction.NAME + ":op_type/create";
 
     private static final Logger logger = LogManager.getLogger(AuthorizationService.class);
 

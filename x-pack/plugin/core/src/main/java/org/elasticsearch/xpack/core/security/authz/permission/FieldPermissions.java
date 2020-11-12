@@ -206,7 +206,7 @@ public final class FieldPermissions implements Accountable {
         return FieldSubsetReader.wrap(reader, permittedFieldsAutomaton);
     }
 
-    Automaton getIncludeAutomaton() {
+    public Automaton getIncludeAutomaton() {
         return originalAutomaton;
     }
 
