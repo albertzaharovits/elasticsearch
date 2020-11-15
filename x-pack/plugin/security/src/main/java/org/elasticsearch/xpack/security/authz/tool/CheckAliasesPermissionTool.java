@@ -302,7 +302,7 @@ public class CheckAliasesPermissionTool extends LoggingAwareCommand {
                                                 }
                                             }
                                         }
-                                        if (Strings.hasText(message)) {
+                                        if (terminal.isPrintable(Terminal.Verbosity.VERBOSE) && Strings.hasText(message)) {
                                             if (indexAbstraction.getName().equals(indexMetadata
                                                     .getSettings().get("index.lifecycle.rollover_alias"))) {
                                                 message = message.concat(" The alias is the rollover alias for the [" +
@@ -320,7 +320,8 @@ public class CheckAliasesPermissionTool extends LoggingAwareCommand {
                                 "] alias but no \"read\" access on the [" +
                                 Strings.collectionToCommaDelimitedString(aliasAndIndices.getValue()) +
                                 "] indices that the alias points to.";
-                        if (lifecycleRolloverAliasToIndicesMap.get(aliasAndIndices.getKey()).containsAll(aliasAndIndices.getValue())) {
+                        if (lifecycleRolloverAliasToIndicesMap.containsKey(aliasAndIndices.getKey()) &&
+                                lifecycleRolloverAliasToIndicesMap.get(aliasAndIndices.getKey()).containsAll(aliasAndIndices.getValue())) {
                             message = message + " The alias is the rollover alias of the indices' lifecycle policies.";
                         }
                         terminal.println(message);
@@ -331,7 +332,8 @@ public class CheckAliasesPermissionTool extends LoggingAwareCommand {
                                 Strings.collectionToCommaDelimitedString(aliasAndIndices.getValue()) +
                                 "] indices that the alias points to, such that more or different documents are " +
                                 "accessible if querying or retrieving via the alias then via the indices.";
-                        if (lifecycleRolloverAliasToIndicesMap.get(aliasAndIndices.getKey()).containsAll(aliasAndIndices.getValue())) {
+                        if (lifecycleRolloverAliasToIndicesMap.containsKey(aliasAndIndices.getKey()) &&
+                                lifecycleRolloverAliasToIndicesMap.get(aliasAndIndices.getKey()).containsAll(aliasAndIndices.getValue())) {
                             message = message + " The alias is the rollover alias of the indices' lifecycle policies.";
                         }
                         terminal.println(message);
@@ -342,12 +344,13 @@ public class CheckAliasesPermissionTool extends LoggingAwareCommand {
                                 Strings.collectionToCommaDelimitedString(aliasAndIndices.getValue()) +
                                 "] indices that the alias points to, such that more or different fields are " +
                                 "accessible if querying or retrieving via the alias then via the indices.";
-                        if (lifecycleRolloverAliasToIndicesMap.get(aliasAndIndices.getKey()).containsAll(aliasAndIndices.getValue())) {
+                        if (lifecycleRolloverAliasToIndicesMap.containsKey(aliasAndIndices.getKey()) &&
+                                lifecycleRolloverAliasToIndicesMap.get(aliasAndIndices.getKey()).containsAll(aliasAndIndices.getValue())) {
                             message = message + " The alias is the rollover alias of the indices' lifecycle policies.";
                         }
                         terminal.println(message);
                     }
-                    Map<String, Set<String>> collatedWritePermissionChecks = new HashMap<>();
+                    Map<String, String> collatedWritePermissionChecks = new HashMap<>();
                     // check write permissions
                     for (String writeAction : List.of(UpdateAction.NAME, DeleteAction.NAME, AuthorizationService.IMPLIED_CREATE_ACTION,
                             AuthorizationService.IMPLIED_INDEX_ACTION)) {
@@ -360,7 +363,7 @@ public class CheckAliasesPermissionTool extends LoggingAwareCommand {
                                 } else if (aliasToWriteIndexMap.containsKey(indexAbstraction.getName())) {
                                     writeIndexMetadata = indexMetadataMap.get(aliasToWriteIndexMap.get(indexAbstraction.getName()));
                                 }
-                                // only if this alias can be written to
+                                // verify the write permissions, but only if this alias can be written to
                                 if (writeIndexMetadata != null) {
                                     // authorize on the alias
                                     IndicesAccessControl aliasAccessControl = role.authorize(writeAction,
@@ -375,30 +378,35 @@ public class CheckAliasesPermissionTool extends LoggingAwareCommand {
                                                                 mockAliasAndIndexLookup, fieldPermissionsCache)
                                                                 .getIndexPermissions(indexName));
                                         if (false == indexAccessControl.isGranted()) {
-                                            String message = "The role [" + roleName + "] permits the [" + writeAction +
-                                                    "] action on the [" + indexAbstraction.getName() + "] alias, but not on the " +
-                                                    "[" + indexName + "] index that the alias points to (on writing).";
-                                            if (indexAbstraction.getName().equals(writeIndexMetadata.getSettings()
-                                                    .get("index.lifecycle.rollover_alias"))) {
-                                                message = message.concat(" The alias is the rollover alias for the [" +
-                                                        writeIndexMetadata.getSettings().get("index.lifecycle.name") + "] lifecycle " +
-                                                        "policy.");
-                                            }
-                                            terminal.println(Terminal.Verbosity.VERBOSE, message);
-                                            collatedWritePermissionChecks.computeIfAbsent(indexAbstraction.getName(),
-                                                    (k) -> new HashSet<>()).add(indexName);
+                                            collatedWritePermissionChecks.put(indexAbstraction.getName(), indexName);
                                             roleHasIssue = true;
+                                            if (terminal.isPrintable(Terminal.Verbosity.VERBOSE)) {
+                                                String message = "The role [" + roleName + "] permits the [" + writeAction +
+                                                        "] action on the [" + indexAbstraction.getName() + "] alias, but not on the " +
+                                                        "[" + indexName + "] index that the alias points to (on writing).";
+                                                if (indexAbstraction.getName().equals(writeIndexMetadata.getSettings()
+                                                        .get("index.lifecycle.rollover_alias"))) {
+                                                    message = message.concat(" The alias is the rollover alias for the [" +
+                                                            writeIndexMetadata.getSettings().get("index.lifecycle.name") + "] lifecycle " +
+                                                            "policy.");
+                                                }
+                                                terminal.println(Terminal.Verbosity.VERBOSE, message);
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
                     }
-                    for (Map.Entry<String, Set<String>> aliasAndIndices : collatedWritePermissionChecks.entrySet()) {
-                        terminal.println("The [" + roleName + "] role grants some \"write\" access on the [" + aliasAndIndices.getKey() +
-                                "] alias but no \"write\" access on the [" +
-                                Strings.collectionToCommaDelimitedString(aliasAndIndices.getValue()) +
-                                "] indices that the alias points to.");
+                    for (Map.Entry<String, String> aliasAndWriteIndex : collatedWritePermissionChecks.entrySet()) {
+                        String message = "The [" + roleName + "] role grants some \"write\" access on the [" + aliasAndWriteIndex.getKey() +
+                                "] alias but no \"write\" access on the [" + aliasAndWriteIndex.getValue() +
+                                "] index that the alias points to for writing.";
+                        if (lifecycleRolloverAliasToIndicesMap.containsKey(aliasAndWriteIndex.getKey()) &&
+                                lifecycleRolloverAliasToIndicesMap.get(aliasAndWriteIndex.getKey()).contains(aliasAndWriteIndex.getValue())) {
+                            message = message + " The alias is the rollover alias of the index's lifecycle policy.";
+                        }
+                        terminal.println(message);
                     }
                     if (roleHasIssue) {
                         countRolesWithIssues++;
