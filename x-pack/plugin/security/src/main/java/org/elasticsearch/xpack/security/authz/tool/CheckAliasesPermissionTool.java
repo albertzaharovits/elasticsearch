@@ -331,7 +331,7 @@ public class CheckAliasesPermissionTool extends LoggingAwareCommand {
                                 aliasAndIndices.getKey() + "] alias compared to the [" +
                                 Strings.collectionToCommaDelimitedString(aliasAndIndices.getValue()) +
                                 "] indices that the alias points to, such that more or different documents are " +
-                                "accessible if querying or retrieving via the alias then via the indices.";
+                                "accessible if querying or retrieving via the alias than via the indices.";
                         if (lifecycleRolloverAliasToIndicesMap.containsKey(aliasAndIndices.getKey()) &&
                                 lifecycleRolloverAliasToIndicesMap.get(aliasAndIndices.getKey()).containsAll(aliasAndIndices.getValue())) {
                             message = message + " The alias is the rollover alias of the indices' lifecycle policies.";
@@ -343,7 +343,7 @@ public class CheckAliasesPermissionTool extends LoggingAwareCommand {
                                 aliasAndIndices.getKey() + "] alias compared to the [" +
                                 Strings.collectionToCommaDelimitedString(aliasAndIndices.getValue()) +
                                 "] indices that the alias points to, such that more or different fields are " +
-                                "accessible if querying or retrieving via the alias then via the indices.";
+                                "accessible if querying or retrieving via the alias than via the indices.";
                         if (lifecycleRolloverAliasToIndicesMap.containsKey(aliasAndIndices.getKey()) &&
                                 lifecycleRolloverAliasToIndicesMap.get(aliasAndIndices.getKey()).containsAll(aliasAndIndices.getValue())) {
                             message = message + " The alias is the rollover alias of the indices' lifecycle policies.";
