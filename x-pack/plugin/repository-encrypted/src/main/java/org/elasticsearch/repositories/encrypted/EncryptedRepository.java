@@ -163,6 +163,11 @@ public class EncryptedRepository extends BlobStoreRepository {
     }
 
     @Override
+    public void updateState(ClusterState state) {
+        super.updateState(state);
+    }
+
+    @Override
     public RepositoryStats stats() {
         return this.delegatedRepository.stats();
     }
