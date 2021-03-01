@@ -604,7 +604,7 @@ public class IndicesService extends AbstractLifecycleComponent
             // double check that shard is not created.
             new IndexEventListener() {
                 @Override
-                public void beforeIndexShardCreated(ShardId shardId, Settings indexSettings) {
+                public void beforeIndexShardCreated(ShardRouting shardRouting, Settings indexSettings) {
                     assert false : "temp index should not trigger shard creation";
                     throw new ElasticsearchException("temp index should not trigger shard creation [{}]", index);
                 }
@@ -866,19 +866,20 @@ public class IndicesService extends AbstractLifecycleComponent
      * but does not deal with in-memory structures. For those call {@link #removeIndex(Index, IndexRemovalReason, String)}
      */
     @Override
-    public void deleteUnassignedIndex(String reason, IndexMetadata metadata, ClusterState clusterState) {
+    public void deleteUnassignedIndex(String reason, IndexMetadata oldIndexMetadata, ClusterState clusterState) {
         if (nodeEnv.hasNodeFile()) {
-            String indexName = metadata.getIndex().getName();
+            Index index = oldIndexMetadata.getIndex();
             try {
-                if (clusterState.metadata().hasIndex(indexName)) {
-                    final IndexMetadata index = clusterState.metadata().index(indexName);
-                    throw new IllegalStateException("Can't delete unassigned index store for [" + indexName + "] - it's still part of " +
-                                                    "the cluster state [" + index.getIndexUUID() + "] [" + metadata.getIndexUUID() + "]");
+                if (clusterState.metadata().hasIndex(index)) {
+                    final IndexMetadata currentMetadata = clusterState.metadata().index(index);
+                    throw new IllegalStateException("Can't delete unassigned index store for [" + index.getName() + "] - it's still part " +
+                        "of the cluster state [" + currentMetadata.getIndexUUID() + "] [" +
+                        oldIndexMetadata.getIndexUUID() + "]");
                 }
-                deleteIndexStore(reason, metadata);
+                deleteIndexStore(reason, oldIndexMetadata);
             } catch (Exception e) {
                 logger.warn(() -> new ParameterizedMessage("[{}] failed to delete unassigned index (reason [{}])",
-                    metadata.getIndex(), reason), e);
+                    oldIndexMetadata.getIndex(), reason), e);
             }
         }
     }
