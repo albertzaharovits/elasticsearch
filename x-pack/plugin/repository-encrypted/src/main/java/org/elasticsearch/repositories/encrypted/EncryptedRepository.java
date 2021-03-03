@@ -59,9 +59,11 @@ import java.nio.file.NoSuchFileException;
 import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -82,6 +84,7 @@ public class EncryptedRepository extends BlobStoreRepository {
     // the path of the blob container holding all the DEKs
     // this is relative to the root base path holding the encrypted blobs (i.e. the repository root base path)
     static final String DEK_ROOT_CONTAINER = ".encryption-metadata"; // package private for tests
+    static final String ROTATION_INTENTION_CONTAINER = "pass-change"; // package private for tests
     static final int DEK_ID_LENGTH = 22; // {@code org.elasticsearch.common.UUIDS} length
 
     // the snapshot metadata (residing in the cluster state for the lifetime of the snapshot)
@@ -428,6 +431,35 @@ public class EncryptedRepository extends BlobStoreRepository {
                     throw new RepositoryException(repositoryName, "Unexpected exception retrieving DEK [" + dekId + "]", e);
                 }
             }
+        }
+
+        private void list() throws IOException {
+            final BlobPath intentionContainerPath = delegatedBasePath.add(DEK_ROOT_CONTAINER).add(ROTATION_INTENTION_CONTAINER);
+            final BlobContainer intentionContainer = delegatedBlobStore.blobContainer(intentionContainerPath);
+            final Set<String> lingeringIntentions = new HashSet<>();
+            for (int retryCount = 0; retryCount < 5; retryCount++) {
+                final Map<String, BlobMetadata> intentionBlobs = intentionContainer.listBlobs();
+                if (intentionBlobs.isEmpty()) {
+                    break;
+                }
+                if (retryCount == 0) {
+                    lingeringIntentions.addAll(intentionBlobs.keySet());
+                } else {
+                    lingeringIntentions.removeIf(lingeringIntention -> false == intentionBlobs.containsKey(lingeringIntention));
+                }
+                try {
+                    Thread.sleep(2000);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+            if (lingeringIntentions.isEmpty()) {
+                // there is no intention blob that was present for the whole time interval
+                // it looks like a party where everyone tries to change the repository's password
+                // try again later
+            }
+            // iterate see if there's any in-progress
         }
 
         private SecretKey loadDEK(String dekId) throws IOException {
