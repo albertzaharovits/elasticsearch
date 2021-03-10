@@ -33,6 +33,7 @@ import org.elasticsearch.common.cache.CacheBuilder;
 import org.elasticsearch.common.collect.Tuple;
 import org.elasticsearch.common.io.Streams;
 import org.elasticsearch.common.settings.SecureString;
+import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.util.BigArrays;
 import org.elasticsearch.common.xcontent.NamedXContentRegistry;
 import org.elasticsearch.index.mapper.MapperService;
@@ -84,8 +85,12 @@ public class EncryptedRepository extends BlobStoreRepository {
     // the path of the blob container holding all the DEKs
     // this is relative to the root base path holding the encrypted blobs (i.e. the repository root base path)
     static final String DEK_ROOT_CONTAINER = ".encryption-metadata"; // package private for tests
-    static final String ROTATION_INTENTION_CONTAINER = "pass-change"; // package private for tests
     static final int DEK_ID_LENGTH = 22; // {@code org.elasticsearch.common.UUIDS} length
+
+    // pass change params
+    private static final String PASS_CHANGE_INTENTS_CONTAINER = "pass-change-intents";
+    private static final String PASS_CHANGE_COMMITS_CONTAINER = "pass-change-commits";
+    private static final TimeValue PASS_CHANGE_COMMIT_TIMEOUT = TimeValue.timeValueSeconds(20);
 
     // the snapshot metadata (residing in the cluster state for the lifetime of the snapshot)
     // contains the salted hash of the repository password as present on the master node (which starts the snapshot operation).
@@ -434,7 +439,7 @@ public class EncryptedRepository extends BlobStoreRepository {
         }
 
         private void list() throws IOException {
-            final BlobPath intentionContainerPath = delegatedBasePath.add(DEK_ROOT_CONTAINER).add(ROTATION_INTENTION_CONTAINER);
+            final BlobPath intentionContainerPath = delegatedBasePath.add(DEK_ROOT_CONTAINER).add(PASS_CHANGE_INTENTS_CONTAINER);
             final BlobContainer intentionContainer = delegatedBlobStore.blobContainer(intentionContainerPath);
             final Set<String> lingeringIntentions = new HashSet<>();
             for (int retryCount = 0; retryCount < 5; retryCount++) {
