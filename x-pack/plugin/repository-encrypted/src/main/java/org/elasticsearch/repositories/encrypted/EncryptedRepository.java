@@ -59,6 +59,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.NoSuchFileException;
 import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
+import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -88,9 +89,8 @@ public class EncryptedRepository extends BlobStoreRepository {
     static final int DEK_ID_LENGTH = 22; // {@code org.elasticsearch.common.UUIDS} length
 
     // pass change params
-    private static final String PASS_CHANGE_INTENTS_CONTAINER = "pass-change-intents";
-    private static final String PASS_CHANGE_COMMITS_CONTAINER = "pass-change-commits";
-    private static final TimeValue PASS_CHANGE_COMMIT_TIMEOUT = TimeValue.timeValueSeconds(20);
+    // TODO have separate nested container
+    private static final String PASS_CHANGE_LOCK_BLOB_NAME_PREFIX = "lock-pass-change-";
 
     // the snapshot metadata (residing in the cluster state for the lifetime of the snapshot)
     // contains the salted hash of the repository password as present on the master node (which starts the snapshot operation).
@@ -110,7 +110,7 @@ public class EncryptedRepository extends BlobStoreRepository {
     private final Supplier<Tuple<BytesReference, SecretKey>> dekGenerator;
     // license is checked before every snapshot operations; protected non-final for tests
     protected Supplier<XPackLicenseState> licenseStateSupplier;
-    private final SecureString repositoryPassword;
+    private final RepositoryPasswords repositoryPasswords;
     private final String localRepositoryPasswordHash;
     private final String localRepositoryPasswordSalt;
     private volatile String validatedLocalRepositoryPasswordHash;
@@ -134,7 +134,7 @@ public class EncryptedRepository extends BlobStoreRepository {
         RecoverySettings recoverySettings,
         BlobStoreRepository delegatedRepository,
         Supplier<XPackLicenseState> licenseStateSupplier,
-        SecureString repositoryPassword
+        RepositoryPasswords repositoryPasswords
     ) throws GeneralSecurityException {
         super(
             metadata,
@@ -148,7 +148,7 @@ public class EncryptedRepository extends BlobStoreRepository {
         this.delegatedRepository = delegatedRepository;
         this.dekGenerator = createDEKGenerator();
         this.licenseStateSupplier = licenseStateSupplier;
-        this.repositoryPassword = repositoryPassword;
+        this.repositoryPasswords = repositoryPasswords;
         // the salt used to generate an irreversible "hash"; it is generated randomly but it's fixed for the lifetime of the
         // repository solely for efficiency reasons
         this.localRepositoryPasswordSalt = UUIDs.randomBase64UUID();
@@ -173,6 +173,7 @@ public class EncryptedRepository extends BlobStoreRepository {
     @Override
     public void updateState(ClusterState state) {
         super.updateState(state);
+        this.repositoryPasswords.settingsUpdate(getRepoMetadata(state).settings());
     }
 
     @Override
@@ -558,6 +559,14 @@ public class EncryptedRepository extends BlobStoreRepository {
         public void close() {
             // do NOT close delegatedBlobStore; it will be closed when the inner delegatedRepository is closed
         }
+    }
+
+    static final class PasswordChangeMetadata {
+        String nodeName;
+        String clusterName;
+        LocalDateTime timeStarted;
+        String fromPasswordHash;
+        String toPasswordHash;
     }
 
     private static final class EncryptedBlobContainer extends AbstractBlobContainer {

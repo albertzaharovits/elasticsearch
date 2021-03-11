@@ -2012,7 +2012,7 @@ public abstract class BlobStoreRepository extends AbstractLifecycleComponent imp
         return SnapshotsService.updateWithSnapshots(state, updatedSnapshotsInProgress, updatedDeletionsInProgress);
     }
 
-    private RepositoryMetadata getRepoMetadata(ClusterState state) {
+    protected RepositoryMetadata getRepoMetadata(ClusterState state) {
         final RepositoryMetadata repositoryMetadata =
             state.getMetadata().<RepositoriesMetadata>custom(RepositoriesMetadata.TYPE).repository(metadata.name());
         assert repositoryMetadata != null;

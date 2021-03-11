@@ -14,9 +14,11 @@ import org.elasticsearch.Build;
 import org.elasticsearch.cluster.metadata.RepositoryMetadata;
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.Strings;
+import org.elasticsearch.common.collect.Tuple;
 import org.elasticsearch.common.settings.SecureSetting;
 import org.elasticsearch.common.settings.SecureString;
 import org.elasticsearch.common.settings.Setting;
+import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.util.BigArrays;
 import org.elasticsearch.common.xcontent.NamedXContentRegistry;
 import org.elasticsearch.env.Environment;
@@ -69,7 +71,6 @@ public class EncryptedRepositoryPlugin extends Plugin implements RepositoryPlugi
         key -> SecureSetting.secureString(key, null)
     );
     static final Setting<String> DELEGATE_TYPE_SETTING = Setting.simpleString("delegate_type", "");
-    static final Setting<String> PASSWORD_NAME_SETTING = Setting.simpleString("password_name", "");
 
     // "protected" because it is overloaded for tests
     protected XPackLicenseState getLicenseState() {
@@ -136,22 +137,12 @@ public class EncryptedRepositoryPlugin extends Plugin implements RepositoryPlugi
                         "Unsupported delegate repository type [" + delegateType + "] for setting [" + DELEGATE_TYPE_SETTING.getKey() + "]"
                     );
                 }
-                final String repositoryPasswordName = PASSWORD_NAME_SETTING.get(metadata.settings());
-                if (Strings.hasLength(repositoryPasswordName) == false) {
-                    throw new IllegalArgumentException("Repository setting [" + PASSWORD_NAME_SETTING.getKey() + "] must be set");
-                }
-                final SecureString repositoryPassword = repositoryPasswordsMap.get(repositoryPasswordName);
-                if (repositoryPassword == null) {
-                    throw new IllegalArgumentException(
-                        "Secure setting ["
-                            + ENCRYPTION_PASSWORD_SETTING.getConcreteSettingForNamespace(repositoryPasswordName).getKey()
-                            + "] must be set"
-                    );
-                }
+                final RepositoryPasswords repositoryPasswords = new RepositoryPasswords(repositoryPasswordsMap, metadata.settings());
                 final Repository delegatedRepository = factory.create(
                     new RepositoryMetadata(metadata.name(), delegateType, metadata.settings())
                 );
                 if (false == (delegatedRepository instanceof BlobStoreRepository) || delegatedRepository instanceof EncryptedRepository) {
+                    delegatedRepository.close();
                     throw new IllegalArgumentException("Unsupported delegate repository type [" + DELEGATE_TYPE_SETTING.getKey() + "]");
                 }
                 if (false == getLicenseState().checkFeature(XPackLicenseState.Feature.ENCRYPTED_SNAPSHOT)) {
@@ -174,7 +165,7 @@ public class EncryptedRepositoryPlugin extends Plugin implements RepositoryPlugi
                     recoverySettings,
                     (BlobStoreRepository) delegatedRepository,
                     () -> getLicenseState(),
-                    repositoryPassword
+                    repositoryPasswords
                 );
             }
         });
@@ -189,7 +180,7 @@ public class EncryptedRepositoryPlugin extends Plugin implements RepositoryPlugi
         RecoverySettings recoverySettings,
         BlobStoreRepository delegatedRepository,
         Supplier<XPackLicenseState> licenseStateSupplier,
-        SecureString repoPassword
+        RepositoryPasswords repositoryPasswords
     ) throws GeneralSecurityException {
         return new EncryptedRepository(
             metadata,
@@ -199,7 +190,7 @@ public class EncryptedRepositoryPlugin extends Plugin implements RepositoryPlugi
             recoverySettings,
             delegatedRepository,
             licenseStateSupplier,
-            repoPassword
+            repositoryPasswords
         );
     }
 }
