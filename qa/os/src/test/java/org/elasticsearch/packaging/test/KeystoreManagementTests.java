@@ -262,15 +262,14 @@ public class KeystoreManagementTests extends PackagingTestCase {
      * Check that we can mount a password-protected keystore to a docker image
      * and provide a password via an environment variable.
      */
-    @AwaitsFix(bugUrl = "Keystore fails to save with resource busy")
     public void test60DockerEnvironmentVariablePassword() throws Exception {
         assumeTrue(distribution().isDocker());
         String password = "keystore-password";
 
         Path localConfigDir = getMountedLocalConfDirWithKeystore(password, installation.config);
 
-        // restart ES with password and mounted keystore
-        Map<Path, Path> volumes = Map.of(localConfigDir, installation.config);
+        // restart ES with password and mounted config dir containing password protected keystore
+        Map<Path, Path> volumes = Map.of(localConfigDir.resolve("config"), installation.config);
         Map<String, String> envVars = Map.of(
             "KEYSTORE_PASSWORD",
             password,
@@ -288,13 +287,12 @@ public class KeystoreManagementTests extends PackagingTestCase {
      * Check that we can mount a password-protected keystore to a docker image
      * and provide a password via a file, pointed at from an environment variable.
      */
-    @AwaitsFix(bugUrl = "Keystore fails to save with resource busy")
     public void test61DockerEnvironmentVariablePasswordFromFile() throws Exception {
         assumeTrue(distribution().isDocker());
 
         Path tempDir = null;
         try {
-            tempDir = createTempDir(DockerTests.class.getSimpleName());
+            tempDir = createTempDir(KeystoreManagementTests.class.getSimpleName());
 
             String password = "keystore-password";
             String passwordFilename = "password.txt";
@@ -303,8 +301,8 @@ public class KeystoreManagementTests extends PackagingTestCase {
 
             Path localConfigDir = getMountedLocalConfDirWithKeystore(password, installation.config);
 
-            // restart ES with password and mounted keystore
-            Map<Path, Path> volumes = Map.of(localConfigDir, installation.config, tempDir, Path.of("/run/secrets"));
+            // restart ES with password and mounted config dir containing password protected keystore
+            Map<Path, Path> volumes = Map.of(localConfigDir.resolve("config"), installation.config, tempDir, Path.of("/run/secrets"));
             Map<String, String> envVars = Map.of(
                 "KEYSTORE_PASSWORD_FILE",
                 "/run/secrets/" + passwordFilename,
@@ -329,15 +327,14 @@ public class KeystoreManagementTests extends PackagingTestCase {
      * Check that if we provide the wrong password for a mounted and password-protected
      * keystore, Elasticsearch doesn't start.
      */
-    @AwaitsFix(bugUrl = "Keystore fails to save with resource busy")
     public void test62DockerEnvironmentVariableBadPassword() throws Exception {
         assumeTrue(distribution().isDocker());
         String password = "keystore-password";
 
         Path localConfigPath = getMountedLocalConfDirWithKeystore(password, installation.config);
 
-        // restart ES with password and mounted config dir
-        Map<Path, Path> volumes = Map.of(localConfigPath, installation.config);
+        // restart ES with password and mounted config dir containing password protected keystore
+        Map<Path, Path> volumes = Map.of(localConfigPath.resolve("config"), installation.config);
         Map<String, String> envVars = Map.of("KEYSTORE_PASSWORD", "wrong");
         Shell.Result r = runContainerExpectingFailure(distribution(), builder().volumes(volumes).envVars(envVars));
         assertThat(r.stderr, containsString(ERROR_INCORRECT_PASSWORD));
@@ -383,7 +380,7 @@ public class KeystoreManagementTests extends PackagingTestCase {
         sh.run("bash " + dockerTemp.resolve("set-pass.sh"));
 
         // copy keystore to temp file to make it available to docker host
-        sh.run("cp " + dockerKeystore + " " + dockerTemp);
+        sh.run("cp -arf " + dockerKeystore + " " + dockerTemp);
         return tempDirectory;
     }
 
