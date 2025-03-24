@@ -9,14 +9,22 @@
 
 package org.elasticsearch.index.engine;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.elasticsearch.cluster.routing.allocation.DiskThresholdSettings;
+import org.elasticsearch.common.settings.Setting;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.ByteSizeValue;
+import org.elasticsearch.common.unit.RelativeByteSizeValue;
+import org.elasticsearch.common.util.concurrent.AbstractAsyncTask;
 import org.elasticsearch.common.util.concurrent.ConcurrentCollections;
 import org.elasticsearch.core.Nullable;
+import org.elasticsearch.core.TimeValue;
 import org.elasticsearch.index.engine.ThreadPoolMergeScheduler.MergeTask;
 import org.elasticsearch.threadpool.ThreadPool;
 
 import java.util.Comparator;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.PriorityBlockingQueue;
@@ -25,11 +33,60 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.LongUnaryOperator;
 
+import static org.elasticsearch.cluster.routing.allocation.DiskThresholdSettings.CLUSTER_ROUTING_ALLOCATION_DISK_FLOOD_STAGE_MAX_HEADROOM_DEFAULT;
 import static org.elasticsearch.index.engine.ThreadPoolMergeScheduler.Schedule.ABORT;
 import static org.elasticsearch.index.engine.ThreadPoolMergeScheduler.Schedule.BACKLOG;
 import static org.elasticsearch.index.engine.ThreadPoolMergeScheduler.Schedule.RUN;
 
 public class ThreadPoolMergeExecutorService {
+    private static final Logger logger = LogManager.getLogger(ThreadPoolMergeExecutorService.class);
+    // TODO make these two settings dynamic
+    // TODO highlight that these settings are effective only if "indices.merge.scheduler.use_thread_pool" is "true"
+    public static final Setting<RelativeByteSizeValue> CLUSTER_MERGE_DISK_FLOOD_STAGE_WATERMARK_SETTING = new Setting<>(
+            "cluster.merge.disk.watermark.flood_stage",
+            DiskThresholdSettings.CLUSTER_ROUTING_ALLOCATION_DISK_FLOOD_STAGE_WATERMARK_SETTING,
+            (s) -> RelativeByteSizeValue.parseRelativeByteSizeValue(s, "cluster.merge.disk.watermark.flood_stage"),
+            Setting.Property.NodeScope
+    );
+    public static final Setting<ByteSizeValue> CLUSTER_MERGE_DISK_FLOOD_STAGE_MAX_HEADROOM_SETTING = new Setting<>(
+        "cluster.merge.disk.watermark.flood_stage.max_headroom",
+        (settings) -> {
+            if (CLUSTER_MERGE_DISK_FLOOD_STAGE_WATERMARK_SETTING.exists(settings)) {
+                return "-1";
+            } else {
+                return CLUSTER_ROUTING_ALLOCATION_DISK_FLOOD_STAGE_MAX_HEADROOM_DEFAULT;
+            }
+        },
+        (s) -> ByteSizeValue.parseBytesSizeValue(s, "cluster.merge.disk.watermark.flood_stage.max_headroom"),
+        new Setting.Validator<>() {
+            @Override
+            public void validate(ByteSizeValue value) {}
+
+            @Override
+            public void validate(final ByteSizeValue value, final Map<Setting<?>, Object> settings, boolean isPresent) {
+                if (isPresent && value.equals(ByteSizeValue.MINUS_ONE)) {
+                    throw new IllegalArgumentException("setting a headroom value to less than 0 is not supported");
+                }
+                // Ensure that if max headroom value is set, then watermark value is ratios/percentages.
+                final RelativeByteSizeValue floodWatermark = (RelativeByteSizeValue) settings.get(
+                    CLUSTER_MERGE_DISK_FLOOD_STAGE_WATERMARK_SETTING
+                );
+                final ByteSizeValue floodHeadroom = (ByteSizeValue) settings.get(CLUSTER_MERGE_DISK_FLOOD_STAGE_MAX_HEADROOM_SETTING);
+                if (floodWatermark.isAbsolute() && floodHeadroom.equals(ByteSizeValue.MINUS_ONE) == false) {
+                    // No need to check that the high or flood stage watermarks are absolute as well, since there is another check in
+                    // WatermarkValidator that all low/high/flood watermarks should be either ratios/percentages or absolute values.
+                    throw new IllegalArgumentException(
+                        "Merge disk headroom setting is set ["
+                            + floodHeadroom.getStringRep()
+                            + "], while the merge disk watermark ["
+                            + floodWatermark.getStringRep()
+                            + "] value is set to absolute value instead of ratios/percentages"
+                    );
+                }
+            }
+        },
+        Setting.Property.NodeScope
+    );
     /**
      * Floor for IO write rate limit of individual merge tasks (we will never go any lower than this)
      */
@@ -65,6 +122,7 @@ public class ThreadPoolMergeExecutorService {
      * across all {@link ThreadPoolMergeScheduler}s that use this instance of the queue.
      */
     private final AtomicIORate targetIORateBytesPerSec = new AtomicIORate(START_IO_RATE.getBytes());
+    private final ThreadPool threadPool;
     private final ExecutorService executorService;
     /**
      * The maximum number of concurrently running merges, given the number of threads in the pool.
@@ -72,6 +130,7 @@ public class ThreadPoolMergeExecutorService {
     private final int maxConcurrentMerges;
     private final int concurrentMergesFloorLimitForThrottling;
     private final int concurrentMergesCeilLimitForThrottling;
+    private final DiskSpaceMonitor diskSpaceMonitor;
 
     public static @Nullable ThreadPoolMergeExecutorService maybeCreateThreadPoolMergeExecutorService(
         ThreadPool threadPool,
@@ -85,14 +144,16 @@ public class ThreadPoolMergeExecutorService {
     }
 
     private ThreadPoolMergeExecutorService(ThreadPool threadPool) {
+        this.threadPool = threadPool;
         this.executorService = threadPool.executor(ThreadPool.Names.MERGE);
         this.maxConcurrentMerges = threadPool.info(ThreadPool.Names.MERGE).getMax();
         this.concurrentMergesFloorLimitForThrottling = maxConcurrentMerges * 2;
         this.concurrentMergesCeilLimitForThrottling = maxConcurrentMerges * 4;
+        this.diskSpaceMonitor = new DiskSpaceMonitor();
     }
 
     boolean submitMergeTask(MergeTask mergeTask) {
-        assert mergeTask.isRunning() == false;
+        assert mergeTask.isStarted() == false;
         // first enqueue the runnable that runs exactly one merge task (the smallest it can find)
         if (enqueueMergeTaskExecution() == false) {
             // if the thread pool cannot run the merge, just abort it
@@ -185,7 +246,7 @@ public class ThreadPoolMergeExecutorService {
     }
 
     private void runMergeTask(MergeTask mergeTask) {
-        assert mergeTask.isRunning() == false;
+        assert mergeTask.isStarted() == false;
         boolean added = runningMergeTasks.add(mergeTask);
         assert added : "starting merge task [" + mergeTask + "] registered as already running";
         try {
@@ -203,7 +264,7 @@ public class ThreadPoolMergeExecutorService {
     }
 
     private void abortMergeTask(MergeTask mergeTask) {
-        assert mergeTask.isRunning() == false;
+        assert mergeTask.isStarted() == false;
         assert runningMergeTasks.contains(mergeTask) == false;
         try {
             mergeTask.abort();
@@ -211,6 +272,28 @@ public class ThreadPoolMergeExecutorService {
             if (mergeTask.supportsIOThrottling()) {
                 ioThrottledMergeTasksCount.decrementAndGet();
             }
+        }
+    }
+
+    class DiskSpaceMonitor extends AbstractAsyncTask {
+        
+        void init() {
+            new DiskSpaceMonitor().rescheduleIfNecessary();
+        }
+
+        private DiskSpaceMonitor() {
+            // TODO make reschedule interval a setting and maybe dynamic depending on disk space
+            super(logger, threadPool, threadPool.generic(), TimeValue.timeValueSeconds(10), true);
+        }
+
+        @Override
+        protected boolean mustReschedule() {
+            return executorService.isShutdown() == false;
+        }
+
+        @Override
+        protected void runInternal() {
+            long estimatedRemainingMergeSize = runningMergeTasks.stream().map(MergeTask::estimatedRemainingMergeSize).reduce(0L, Long::sum);
         }
     }
 

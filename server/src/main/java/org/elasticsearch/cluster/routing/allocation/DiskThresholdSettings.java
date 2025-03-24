@@ -87,13 +87,14 @@ public class DiskThresholdSettings implements Writeable {
         Setting.Property.Dynamic,
         Setting.Property.NodeScope
     );
+    public static final String CLUSTER_ROUTING_ALLOCATION_DISK_FLOOD_STAGE_MAX_HEADROOM_DEFAULT = "100GB";
     public static final Setting<ByteSizeValue> CLUSTER_ROUTING_ALLOCATION_DISK_FLOOD_STAGE_MAX_HEADROOM_SETTING = new Setting<>(
         "cluster.routing.allocation.disk.watermark.flood_stage.max_headroom",
         (settings) -> {
             if (CLUSTER_ROUTING_ALLOCATION_DISK_FLOOD_STAGE_WATERMARK_SETTING.exists(settings)) {
                 return "-1";
             } else {
-                return "100GB";
+                return CLUSTER_ROUTING_ALLOCATION_DISK_FLOOD_STAGE_MAX_HEADROOM_DEFAULT;
             }
         },
         (s) -> ByteSizeValue.parseBytesSizeValue(s, "cluster.routing.allocation.disk.watermark.flood_stage.max_headroom"),

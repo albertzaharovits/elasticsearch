@@ -211,7 +211,7 @@ public class ThreadPoolMergeScheduler extends MergeScheduler implements Elastics
     // exposed for tests
     // synchronized so that {@code #closed}, {@code #runningMergeTasks} and {@code #backloggedMergeTasks} are modified atomically
     synchronized Schedule schedule(MergeTask mergeTask) {
-        assert mergeTask.isRunning() == false;
+        assert mergeTask.isStarted() == false;
         if (closed) {
             // do not run or backlog tasks when closing the merge scheduler, instead abort them
             return Schedule.ABORT;
@@ -309,6 +309,8 @@ public class ThreadPoolMergeScheduler extends MergeScheduler implements Elastics
         private final OnGoingMerge onGoingMerge;
         private final MergeRateLimiter rateLimiter;
         private final boolean supportsIOThrottling;
+        private boolean isPaused;
+        private double resumeIORateLimit;
 
         MergeTask(MergeSource mergeSource, MergePolicy.OneMerge merge, boolean supportsIOThrottling, String name) {
             this.name = name;
@@ -331,10 +333,35 @@ public class ThreadPoolMergeScheduler extends MergeScheduler implements Elastics
             if (supportsIOThrottling == false) {
                 throw new IllegalArgumentException("merge task cannot be IO throttled");
             }
-            this.rateLimiter.setMBPerSec(ByteSizeValue.ofBytes(ioRateLimitBytesPerSec).getMbFrac());
+            setIORateLimit(ByteSizeValue.ofBytes(ioRateLimitBytesPerSec).getMbFrac());
         }
 
-        public boolean isRunning() {
+        private synchronized void setIORateLimit(double ioRateLimitMBPerSec) {
+            if (isPaused) {
+                resumeIORateLimit = ioRateLimitMBPerSec;
+            } else {
+                rateLimiter.setMBPerSec(ioRateLimitMBPerSec);
+            }
+        }
+
+        public synchronized void pause() {
+            if (isPaused) {
+                return;
+            }
+            isPaused = true;
+            resumeIORateLimit = rateLimiter.getMBPerSec();
+            rateLimiter.setMBPerSec(0.0);
+        }
+
+        public synchronized void resume() {
+            if (isPaused == false) {
+                return;
+            }
+            isPaused = false;
+            rateLimiter.setMBPerSec(resumeIORateLimit);
+        }
+
+        public boolean isStarted() {
             return mergeStartTimeNS.get() > 0L;
         }
 
@@ -346,7 +373,7 @@ public class ThreadPoolMergeScheduler extends MergeScheduler implements Elastics
          */
         @Override
         public void run() {
-            assert isRunning() == false;
+            assert isStarted() == false;
             assert ThreadPoolMergeScheduler.this.runningMergeTasks.containsKey(onGoingMerge.getMerge())
                 : "runNowOrBacklog must be invoked before actually running the merge task";
             try {
@@ -411,7 +438,7 @@ public class ThreadPoolMergeScheduler extends MergeScheduler implements Elastics
          * (by the {@link org.apache.lucene.index.IndexWriter}) to any subsequent merges.
          */
         void abort() {
-            assert isRunning() == false;
+            assert isStarted() == false;
             assert ThreadPoolMergeScheduler.this.runningMergeTasks.containsKey(onGoingMerge.getMerge()) == false
                 : "cannot abort a merge task that's already running";
             if (verbose()) {
@@ -444,6 +471,10 @@ public class ThreadPoolMergeScheduler extends MergeScheduler implements Elastics
             // TODO is it possible that `estimatedMergeBytes` be `0` for correctly initialize merges,
             // or is it always the case that if `estimatedMergeBytes` is `0` that means that the merge has not yet been initialized?
             return onGoingMerge.getMerge().getStoreMergeInfo().estimatedMergeBytes();
+        }
+
+        long estimatedRemainingMergeSize() {
+            return Math.max(0L, estimatedMergeSize() - rateLimiter.getTotalBytesWritten());
         }
 
         @Override
