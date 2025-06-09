@@ -61,6 +61,7 @@ import org.elasticsearch.common.bytes.BytesArray;
 import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.lucene.Lucene;
 import org.elasticsearch.common.lucene.uid.Versions;
+import org.elasticsearch.common.settings.ClusterSettings;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.ByteSizeValue;
 import org.elasticsearch.common.util.BigArrays;
@@ -68,6 +69,7 @@ import org.elasticsearch.core.CheckedFunction;
 import org.elasticsearch.core.IOUtils;
 import org.elasticsearch.core.Nullable;
 import org.elasticsearch.core.TimeValue;
+import org.elasticsearch.env.NodeEnvironment;
 import org.elasticsearch.index.Index;
 import org.elasticsearch.index.IndexModule;
 import org.elasticsearch.index.IndexSettings;
@@ -153,6 +155,8 @@ public abstract class EngineTestCase extends ESTestCase {
     protected static final IndexSettings INDEX_SETTINGS = IndexSettingsModule.newIndexSettings("index", Settings.EMPTY);
 
     protected ThreadPool threadPool;
+    protected NodeEnvironment nodeEnvironment;
+    protected ThreadPoolMergeExecutorService threadPoolMergeExecutorService;
     protected TranslogHandler translogHandler;
 
     protected Store store;
@@ -195,6 +199,7 @@ public abstract class EngineTestCase extends ESTestCase {
                 between(10, 10 * IndexSettings.MAX_REFRESH_LISTENERS_PER_SHARD.get(Settings.EMPTY))
             )
             .put(IndexSettings.INDEX_SOFT_DELETES_RETENTION_OPERATIONS_SETTING.getKey(), between(0, 1000))
+            .put(ThreadPoolMergeScheduler.USE_THREAD_POOL_MERGE_SCHEDULER_SETTING.getKey(), randomBoolean())
             .build();
     }
 
@@ -235,6 +240,13 @@ public abstract class EngineTestCase extends ESTestCase {
         }
         defaultSettings = IndexSettingsModule.newIndexSettings("index", indexSettings());
         threadPool = new TestThreadPool(getClass().getName());
+        nodeEnvironment = newNodeEnvironment(defaultSettings.getNodeSettings());
+        threadPoolMergeExecutorService = ThreadPoolMergeExecutorService.maybeCreateThreadPoolMergeExecutorService(
+            threadPool,
+            ClusterSettings.createBuiltInClusterSettings(defaultSettings.getNodeSettings()),
+            nodeEnvironment
+        );
+
         store = createStore();
         storeReplica = createStore();
         Lucene.cleanLuceneIndex(store.directory());
@@ -266,6 +278,7 @@ public abstract class EngineTestCase extends ESTestCase {
         return new EngineConfig(
             config.getShardId(),
             config.getThreadPool(),
+            config.getThreadPoolMergeExecutorService(),
             config.getIndexSettings(),
             config.getWarmer(),
             config.getStore(),
@@ -298,6 +311,7 @@ public abstract class EngineTestCase extends ESTestCase {
         return new EngineConfig(
             config.getShardId(),
             config.getThreadPool(),
+            config.getThreadPoolMergeExecutorService(),
             config.getIndexSettings(),
             config.getWarmer(),
             config.getStore(),
@@ -330,6 +344,7 @@ public abstract class EngineTestCase extends ESTestCase {
         return new EngineConfig(
             config.getShardId(),
             config.getThreadPool(),
+            config.getThreadPoolMergeExecutorService(),
             config.getIndexSettings(),
             config.getWarmer(),
             config.getStore(),
@@ -378,7 +393,7 @@ public abstract class EngineTestCase extends ESTestCase {
                 assertAtMostOneLuceneDocumentPerSequenceNumber(replicaEngine);
             }
         } finally {
-            IOUtils.close(replicaEngine, storeReplica, engine, store, () -> terminate(threadPool));
+            IOUtils.close(replicaEngine, storeReplica, engine, store, () -> terminate(threadPool), nodeEnvironment);
         }
     }
 
@@ -834,6 +849,7 @@ public abstract class EngineTestCase extends ESTestCase {
         return new EngineConfig(
             shardId,
             threadPool,
+            threadPoolMergeExecutorService,
             indexSettings,
             null,
             store,
@@ -874,6 +890,7 @@ public abstract class EngineTestCase extends ESTestCase {
         return new EngineConfig(
             config.getShardId(),
             config.getThreadPool(),
+            config.getThreadPoolMergeExecutorService(),
             indexSettings,
             config.getWarmer(),
             store,
